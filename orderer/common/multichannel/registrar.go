@@ -59,7 +59,6 @@ type Registrar struct {
 	ledgerFactory               blockledger.Factory
 	signer                      identity.SignerSerializer
 	blockcutterMetrics          *blockcutter.Metrics
-	templator                   msgprocessor.ChannelConfigTemplator
 	callbacks                   []channelconfig.BundleActor
 	bccsp                       bccsp.BCCSP
 	clusterDialer               *cluster.PredicateDialer
@@ -323,6 +322,8 @@ func (r *Registrar) BroadcastChannelSupport(msg *cb.Envelope) (*cb.ChannelHeader
 		isConfig = true
 	case msgprocessor.ConfigMsg:
 		return chdr, false, nil, errors.New("message is of type that cannot be processed directly")
+	case msgprocessor.UnsupportedMsg:
+		return chdr, false, nil, errors.New("message is of type that is no longer supported")
 	default:
 	}
 
@@ -555,16 +556,6 @@ func (r *Registrar) ChannelsCount() int {
 	defer r.lock.RUnlock()
 
 	return len(r.chains) + len(r.followers)
-}
-
-// NewChannelConfig produces a new template channel configuration based on the system channel's current config.
-func (r *Registrar) NewChannelConfig(envConfigUpdate *cb.Envelope) (channelconfig.Resources, error) {
-	return r.templator.NewChannelConfig(envConfigUpdate)
-}
-
-// CreateBundle calls channelconfig.NewBundle
-func (r *Registrar) CreateBundle(channelID string, config *cb.Config) (channelconfig.Resources, error) {
-	return channelconfig.NewBundle(channelID, config, r.bccsp)
 }
 
 // ChannelList returns a slice of ChannelInfoShort containing all application channels (excluding the system
