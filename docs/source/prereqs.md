@@ -12,7 +12,7 @@ The following prerequisites are required to run a Docker-based Fabric test netwo
 For macOS, we recommend using [Homebrew](https://brew.sh) to manage the prereqs.
 
 ```shell
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 brew --version # => Homebrew 2.5.2
 ```
 
@@ -76,8 +76,8 @@ Optional: Install the latest Fabric supported version of [Go](https://golang.org
 installed (only required if you will be writing Go chaincode or SDK applications).
 
 ```shell
-brew install go@1.20.4
-go version # => go1.20.4 darwin/amd64
+brew install go@1.20.6
+go version # => go1.20.6 darwin/amd64
 ```
 
 ### JQ
