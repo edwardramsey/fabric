@@ -75,6 +75,7 @@ func (nibd NodeIdentitiesByID) IdentityToID(identity []byte) (uint64, bool) {
 
 // Verifier verifies proposals and signatures
 type Verifier struct {
+	Channel               string
 	RuntimeConfig         *atomic.Value
 	ReqInspector          *RequestInspector
 	ConsenterVerifier     ConsenterVerifier
@@ -175,6 +176,10 @@ func (v *Verifier) verifyRequest(rawRequest []byte, noConfigAllowed bool) (types
 		return types.RequestInfo{}, errors.Errorf("only endorser transactions can be sent with other transactions")
 	}
 
+	if req.chHdr.ChannelId != v.Channel {
+		return types.RequestInfo{}, errors.Errorf("request is for channel %s but expected channel %s", req.chHdr.ChannelId, v.Channel)
+	}
+
 	switch req.chHdr.Type {
 	case int32(cb.HeaderType_CONFIG):
 	case int32(cb.HeaderType_ORDERER_TRANSACTION):
@@ -237,10 +242,15 @@ func verifyHashChain(block *cb.Block, prevHeaderHash string) error {
 		return errors.Errorf("previous header hash is %s but expected %s", thisHdrHashOfPrevHdr, prevHeaderHash)
 	}
 
-	dataHash := hex.EncodeToString(block.Header.DataHash)
-	actualHashOfData := hex.EncodeToString(protoutil.BlockDataHash(block.Data))
-	if dataHash != actualHashOfData {
-		return errors.Errorf("data hash is %s but expected %s", dataHash, actualHashOfData)
+	dataHash, err := protoutil.BlockDataHash(block.Data)
+	if err != nil {
+		return err
+	}
+	dataHashString := hex.EncodeToString(block.Header.DataHash)
+
+	actualHashOfData := hex.EncodeToString(dataHash)
+	if dataHashString != actualHashOfData {
+		return errors.Errorf("data hash is %s but expected %s", dataHashString, actualHashOfData)
 	}
 	return nil
 }

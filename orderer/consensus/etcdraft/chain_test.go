@@ -9,7 +9,6 @@ package etcdraft_test
 import (
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/user"
 	"path"
@@ -39,7 +38,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/types"
 	"github.com/pkg/errors"
-	raft "go.etcd.io/etcd/raft/v3"
+	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.uber.org/zap"
 )
@@ -148,7 +147,7 @@ var _ = Describe("Chain", func() {
 			clock = fakeclock.NewFakeClock(time.Now())
 			storage = raft.NewMemoryStorage()
 
-			dataDir, err = ioutil.TempDir("", "wal-")
+			dataDir, err = os.MkdirTemp("", "wal-")
 			Expect(err).NotTo(HaveOccurred())
 			walDir = path.Join(dataDir, "wal")
 			snapDir = path.Join(dataDir, "snapshot")
@@ -249,6 +248,33 @@ var _ = Describe("Chain", func() {
 		})
 
 		Context("when a node starts up", func() {
+			It("WAL 32MB file size should be within size limits", func() {
+				close(cutter.Block)
+				cutter.SetCutNext(true)
+				// Wait for the leader to be chosen
+				campaign(chain, observeC)
+
+				By("Create large TX")
+				large_size_env := &common.Envelope{
+					Payload: marshalOrPanic(&common.Payload{
+						Header: &common.Header{ChannelHeader: marshalOrPanic(&common.ChannelHeader{Type: int32(common.HeaderType_MESSAGE), ChannelId: channelID})},
+						Data:   make([]byte, 32_000_000),
+					}),
+				}
+
+				By("Send TX to chain")
+				Expect(chain.Order(large_size_env, 0)).To(Succeed())
+				By("Wait for TX to be written to WAL")
+				Eventually(support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(1))
+				By("Stop the chain")
+				chain.Halt()
+
+				By("Create new chain")
+				opts.MemoryStorage = raft.NewMemoryStorage()
+				_, err := etcdraft.NewChain(support, opts, configurator, nil, cryptoProvider, noOpBlockPuller, nil, observeC)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
 			It("properly configures the communication layer", func() {
 				expectedNodeConfig := nodeConfigFromMetadata(consenterMetadata)
 				Eventually(configurator.ConfigureCallCount, LongEventualTimeout).Should(Equal(1))
@@ -820,7 +846,7 @@ var _ = Describe("Chain", func() {
 						It("fails to load wal", func() {
 							skipIfRoot()
 
-							files, err := ioutil.ReadDir(walDir)
+							files, err := os.ReadDir(walDir)
 							Expect(err).NotTo(HaveOccurred())
 							for _, f := range files {
 								os.Chmod(path.Join(walDir, f.Name()), 0o300)
@@ -840,7 +866,7 @@ var _ = Describe("Chain", func() {
 					)
 
 					countFiles := func() int {
-						files, err := ioutil.ReadDir(snapDir)
+						files, err := os.ReadDir(snapDir)
 						Expect(err).NotTo(HaveOccurred())
 						return len(files)
 					}
@@ -1249,7 +1275,7 @@ var _ = Describe("Chain", func() {
 
 				When("WAL dir is a file", func() {
 					It("replaces file with fresh WAL dir", func() {
-						f, err := ioutil.TempFile("", "wal-")
+						f, err := os.CreateTemp("", "wal-")
 						Expect(err).NotTo(HaveOccurred())
 						defer os.RemoveAll(f.Name())
 
@@ -1280,7 +1306,7 @@ var _ = Describe("Chain", func() {
 
 				When("WAL dir is not writeable", func() {
 					It("replace it with fresh WAL dir", func() {
-						d, err := ioutil.TempDir("", "wal-")
+						d, err := os.MkdirTemp("", "wal-")
 						Expect(err).NotTo(HaveOccurred())
 						defer os.RemoveAll(d)
 
@@ -1312,7 +1338,7 @@ var _ = Describe("Chain", func() {
 					It("fails to bootstrap fresh raft node", func() {
 						skipIfRoot()
 
-						d, err := ioutil.TempDir("", "wal-")
+						d, err := os.MkdirTemp("", "wal-")
 						Expect(err).NotTo(HaveOccurred())
 						defer os.RemoveAll(d)
 
@@ -1360,7 +1386,7 @@ var _ = Describe("Chain", func() {
 			channelID = "multi-node-channel"
 			timeout = 10 * time.Second
 
-			dataDir, err = ioutil.TempDir("", "raft-test-")
+			dataDir, err = os.MkdirTemp("", "raft-test-")
 			Expect(err).NotTo(HaveOccurred())
 
 			cryptoProvider, err = sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
@@ -1595,7 +1621,7 @@ var _ = Describe("Chain", func() {
 			channelID = "multi-node-channel"
 			timeout = 10 * time.Second
 
-			dataDir, err = ioutil.TempDir("", "raft-test-")
+			dataDir, err = os.MkdirTemp("", "raft-test-")
 			Expect(err).NotTo(HaveOccurred())
 
 			raftMetadata = &raftprotos.BlockMetadata{
@@ -2895,7 +2921,7 @@ var _ = Describe("Chain", func() {
 					c2.opts.SnapshotCatchUpEntries = 1
 
 					countSnapShotsForChain := func(cn *chain) int {
-						files, err := ioutil.ReadDir(cn.opts.SnapDir)
+						files, err := os.ReadDir(cn.opts.SnapDir)
 						Expect(err).NotTo(HaveOccurred())
 						return len(files)
 					}
@@ -3278,7 +3304,7 @@ func nodeConfigFromMetadata(consenterMetadata *raftprotos.ConfigMetadata) []clus
 
 func createMetadata(nodeCount int, tlsCA tlsgen.CA) *raftprotos.ConfigMetadata {
 	md := &raftprotos.ConfigMetadata{Options: &raftprotos.Options{
-		TickInterval:      time.Duration(interval).String(),
+		TickInterval:      interval.String(),
 		ElectionTick:      ELECTION_TICK,
 		HeartbeatTick:     HEARTBEAT_TICK,
 		MaxInflightBlocks: 5,
@@ -3383,7 +3409,7 @@ func newChain(
 
 	opts := etcdraft.Options{
 		RPCTimeout:          timeout,
-		RaftID:              uint64(id),
+		RaftID:              id,
 		Clock:               clock,
 		TickInterval:        interval,
 		ElectionTick:        ELECTION_TICK,
@@ -3710,7 +3736,7 @@ func createNetwork(
 	}
 
 	for _, nodeID := range raftMetadata.ConsenterIds {
-		dir, err := ioutil.TempDir(dataDir, fmt.Sprintf("node-%d-", nodeID))
+		dir, err := os.MkdirTemp(dataDir, fmt.Sprintf("node-%d-", nodeID))
 		Expect(err).NotTo(HaveOccurred())
 
 		m := proto.Clone(raftMetadata).(*raftprotos.BlockMetadata)

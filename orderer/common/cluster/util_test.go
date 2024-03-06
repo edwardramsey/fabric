@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"strings"
 	"sync"
@@ -41,10 +40,7 @@ import (
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
 	"github.com/hyperledger/fabric/protoutil"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 //go:generate counterfeiter -o mocks/policy.go --fake-name Policy . policy
@@ -183,6 +179,44 @@ func TestStandardDialer(t *testing.T) {
 	require.ErrorContains(t, err, "error adding root certificate")
 }
 
+func TestVerifyBlockBFT(t *testing.T) {
+	block, err := test.MakeGenesisBlock("mychannel")
+	require.NoError(t, err)
+
+	configTx := &common.Envelope{}
+	err = proto.Unmarshal(block.Data.Data[0], configTx)
+	require.NoError(t, err)
+
+	configTx.Signature = []byte{1, 2, 3}
+	block.Data.Data[0] = protoutil.MarshalOrPanic(configTx)
+	block.Header.Number = 2
+	block.Header.DataHash = protoutil.ComputeBlockDataHash(block.Data)
+
+	twoBlocks := createBlockChain(2, 3)
+	twoBlocks[0] = block
+
+	assignHashes(twoBlocks)
+
+	var firstBlockVerified bool
+	var secondBlockVerified bool
+
+	err = cluster.VerifyBlocksBFT(twoBlocks, func(header *common.BlockHeader, metadata *common.BlockMetadata) error {
+		firstBlockVerified = true
+		require.Equal(t, uint64(2), header.Number)
+		return nil
+	}, func(block *common.Block) protoutil.BlockVerifierFunc {
+		return func(header *common.BlockHeader, metadata *common.BlockMetadata) error {
+			require.Equal(t, uint64(3), header.Number)
+			secondBlockVerified = true
+			return nil
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, firstBlockVerified)
+	require.True(t, secondBlockVerified)
+}
+
 func TestVerifyBlockHash(t *testing.T) {
 	var start uint64 = 3
 	var end uint64 = 23
@@ -225,7 +259,7 @@ func TestVerifyBlockHash(t *testing.T) {
 		},
 		{
 			name: "data hash mismatch",
-			errorContains: "computed hash of block (13) (dcb2ec1c5e482e4914cb953ff8eedd12774b244b12912afbe6001ba5de9ff800)" +
+			errorContains: "computed hash of block (13) (6de668ac99645e179a4921b477d50df9295fa56cd44f8e5c94756b60ce32ce1c)" +
 				" doesn't match claimed hash (07)",
 			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
 				blockSequence[len(blockSequence)/2].Header.DataHash = []byte{7}
@@ -235,7 +269,7 @@ func TestVerifyBlockHash(t *testing.T) {
 		{
 			name: "prev hash mismatch",
 			errorContains: "block [12]'s hash " +
-				"(866351705f1c2f13e10d52ead9d0ca3b80689ede8cc8bf70a6d60c67578323f4) " +
+				"(72cc7ddf4d8465da95115c0a906416d23d8c74bfcb731a5ab057c213d8db62e1) " +
 				"mismatches block [13]'s prev block hash (07)",
 			mutateBlockSequence: func(blockSequence []*common.Block) []*common.Block {
 				blockSequence[len(blockSequence)/2].Header.PreviousHash = []byte{7}
@@ -285,6 +319,7 @@ func createBlockChain(start, end uint64) []*common.Block {
 		})
 
 		txn := protoutil.MarshalOrPanic(&common.Envelope{
+			Signature: []byte{1, 2, 3},
 			Payload: protoutil.MarshalOrPanic(&common.Payload{
 				Header: &common.Header{},
 			}),
@@ -293,10 +328,9 @@ func createBlockChain(start, end uint64) []*common.Block {
 		return block
 	}
 	var blockchain []*common.Block
-	for seq := uint64(start); seq <= uint64(end); seq++ {
+	for seq := start; seq <= end; seq++ {
 		block := newBlock(seq)
-		block.Data.Data = append(block.Data.Data, make([]byte, 100))
-		block.Header.DataHash = protoutil.BlockDataHash(block.Data)
+		block.Header.DataHash = protoutil.ComputeBlockDataHash(block.Data)
 		blockchain = append(blockchain, block)
 	}
 	assignHashes(blockchain)
@@ -602,33 +636,6 @@ func TestBlockValidationPolicyVerifier(t *testing.T) {
 	}
 }
 
-func TestBlockVerifierAssembler(t *testing.T) {
-	config := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
-	group, err := encoder.NewChannelGroup(config)
-	require.NoError(t, err)
-	require.NotNil(t, group)
-	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
-	require.NoError(t, err)
-
-	t.Run("Good config envelope", func(t *testing.T) {
-		bva := &cluster.BlockVerifierAssembler{BCCSP: cryptoProvider}
-		verifier, err := bva.VerifierFromConfig(&common.ConfigEnvelope{
-			Config: &common.Config{
-				ChannelGroup: group,
-			},
-		}, "mychannel")
-		require.NoError(t, err)
-
-		require.Error(t, verifier(nil, nil))
-	})
-
-	t.Run("Bad config envelope", func(t *testing.T) {
-		bva := &cluster.BlockVerifierAssembler{BCCSP: cryptoProvider}
-		_, err := bva.VerifierFromConfig(&common.ConfigEnvelope{}, "mychannel")
-		require.EqualError(t, err, "channelconfig Config cannot be nil")
-	})
-}
-
 func TestLastConfigBlock(t *testing.T) {
 	blockRetriever := &mocks.BlockRetriever{}
 	blockRetriever.On("Block", uint64(42)).Return(&common.Block{})
@@ -690,169 +697,6 @@ func TestLastConfigBlock(t *testing.T) {
 			}
 			require.EqualError(t, err, testCase.expectedError)
 			require.Nil(t, block)
-		})
-	}
-}
-
-func TestVerificationRegistryRegisterVerifier(t *testing.T) {
-	blockBytes, err := ioutil.ReadFile("testdata/mychannel.block")
-	require.NoError(t, err)
-
-	block := &common.Block{}
-	require.NoError(t, proto.Unmarshal(blockBytes, block))
-
-	mockErr := errors.New("Mock error")
-	verifier := func(header *common.BlockHeader, metadata *common.BlockMetadata) error {
-		return mockErr
-	}
-
-	verifierFactory := &mocks.VerifierFactory{}
-	verifierFactory.On("VerifierFromConfig",
-		mock.Anything, "mychannel").Return(verifier, nil)
-
-	registry := &cluster.VerificationRegistry{
-		Logger:             flogging.MustGetLogger("test"),
-		VerifiersByChannel: make(map[string]protoutil.BlockVerifierFunc),
-		VerifierFactory:    verifierFactory,
-	}
-
-	var loadCount int
-	registry.LoadVerifier = func(chain string) protoutil.BlockVerifierFunc {
-		require.Equal(t, "mychannel", chain)
-		loadCount++
-		return verifier
-	}
-
-	v := registry.RetrieveVerifier("mychannel")
-	require.Nil(t, v)
-
-	registry.RegisterVerifier("mychannel")
-	v = registry.RetrieveVerifier("mychannel")
-	require.Same(t, verifier(nil, nil), v(nil, nil))
-	require.Equal(t, 1, loadCount)
-
-	// If the verifier exists, this is a no-op
-	registry.RegisterVerifier("mychannel")
-	require.Equal(t, 1, loadCount)
-}
-
-func TestVerificationRegistry(t *testing.T) {
-	blockBytes, err := ioutil.ReadFile("testdata/mychannel.block")
-	require.NoError(t, err)
-
-	block := &common.Block{}
-	require.NoError(t, proto.Unmarshal(blockBytes, block))
-
-	flogging.ActivateSpec("test=DEBUG")
-	defer flogging.Reset()
-
-	mockErr := errors.New("Mock error")
-	verifier := func(header *common.BlockHeader, metadata *common.BlockMetadata) error {
-		return mockErr
-	}
-
-	for _, testCase := range []struct {
-		description           string
-		verifiersByChannel    map[string]protoutil.BlockVerifierFunc
-		blockCommitted        *common.Block
-		channelCommitted      string
-		channelRetrieved      string
-		expectedVerifier      protoutil.BlockVerifierFunc
-		verifierFromConfig    protoutil.BlockVerifierFunc
-		verifierFromConfigErr error
-		loggedMessages        map[string]struct{}
-	}{
-		{
-			description:      "bad block",
-			blockCommitted:   &common.Block{},
-			channelRetrieved: "foo",
-			channelCommitted: "foo",
-			loggedMessages: map[string]struct{}{
-				"Failed parsing block of channel foo: empty block, content: " +
-					"{\n\t\"data\": null,\n\t\"header\": null,\n\t\"metadata\": null\n}\n": {},
-				"No verifier for channel foo exists": {},
-			},
-			expectedVerifier: nil,
-		},
-		{
-			description:      "not a config block",
-			blockCommitted:   createBlockChain(5, 5)[0],
-			channelRetrieved: "foo",
-			channelCommitted: "foo",
-			loggedMessages: map[string]struct{}{
-				"No verifier for channel foo exists":                             {},
-				"Committed block [5] for channel foo that is not a config block": {},
-			},
-			expectedVerifier: nil,
-		},
-		{
-			description:           "valid block but verifier from config fails",
-			blockCommitted:        block,
-			verifierFromConfigErr: errors.New("invalid MSP config"),
-			channelRetrieved:      "bar",
-			channelCommitted:      "bar",
-			loggedMessages: map[string]struct{}{
-				"Failed creating a verifier from a " +
-					"config block for channel bar: invalid MSP config, " +
-					"content: " + cluster.BlockToString(block): {},
-				"No verifier for channel bar exists": {},
-			},
-			expectedVerifier: nil,
-		},
-		{
-			description:        "valid block and verifier from config succeeds but wrong channel retrieved",
-			blockCommitted:     block,
-			verifierFromConfig: verifier,
-			channelRetrieved:   "foo",
-			channelCommitted:   "bar",
-			loggedMessages: map[string]struct{}{
-				"No verifier for channel foo exists":         {},
-				"Committed config block [0] for channel bar": {},
-			},
-			expectedVerifier:   nil,
-			verifiersByChannel: make(map[string]protoutil.BlockVerifierFunc),
-		},
-		{
-			description:        "valid block and verifier from config succeeds",
-			blockCommitted:     block,
-			verifierFromConfig: verifier,
-			channelRetrieved:   "bar",
-			channelCommitted:   "bar",
-			loggedMessages: map[string]struct{}{
-				"Committed config block [0] for channel bar": {},
-			},
-			expectedVerifier:   verifier,
-			verifiersByChannel: make(map[string]protoutil.BlockVerifierFunc),
-		},
-	} {
-		t.Run(testCase.description, func(t *testing.T) {
-			verifierFactory := &mocks.VerifierFactory{}
-			verifierFactory.On("VerifierFromConfig",
-				mock.Anything, testCase.channelCommitted).Return(testCase.verifierFromConfig, testCase.verifierFromConfigErr)
-
-			registry := &cluster.VerificationRegistry{
-				Logger:             flogging.MustGetLogger("test"),
-				VerifiersByChannel: testCase.verifiersByChannel,
-				VerifierFactory:    verifierFactory,
-			}
-
-			loggedEntriesByMethods := make(map[string]struct{})
-			// Configure the logger to collect the message logged
-			registry.Logger = registry.Logger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
-				loggedEntriesByMethods[entry.Message] = struct{}{}
-				return nil
-			}))
-
-			registry.BlockCommitted(testCase.blockCommitted, testCase.channelCommitted)
-			verifier := registry.RetrieveVerifier(testCase.channelRetrieved)
-
-			require.Equal(t, testCase.loggedMessages, loggedEntriesByMethods)
-			if testCase.expectedVerifier == nil {
-				require.Nil(t, verifier)
-			} else {
-				require.NotNil(t, verifier)
-				require.Same(t, testCase.expectedVerifier(nil, nil), verifier(nil, nil))
-			}
 		})
 	}
 }

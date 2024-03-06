@@ -418,6 +418,10 @@ func (li *mockLedgerInfo) GetPvtDataAndBlockByNum(seqNum uint64) (*ledger.BlockA
 	panic("implement me")
 }
 
+func (li *mockLedgerInfo) GetCurrentBlockHash() ([]byte, error) {
+	panic("implement me")
+}
+
 // LedgerHeight returns mocked value to the ledger height
 func (li *mockLedgerInfo) LedgerHeight() (uint64, error) {
 	return li.Height, nil
@@ -914,7 +918,7 @@ func TestChannelConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	mockSignerSerializer := &mocks.SignerSerializer{}
-	mockSignerSerializer.SerializeReturns(api.PeerIdentityType(string(orgInChannelA)), nil)
+	mockSignerSerializer.SerializeReturns(orgInChannelA, nil)
 	secAdv := peergossip.NewSecurityAdvisor(peergossip.NewDeserializersManager(mgmt.GetLocalMSP(cryptoProvider)))
 	gossipConfig, err := gossip.GlobalConfig(endpoint, nil)
 	require.NoError(t, err)

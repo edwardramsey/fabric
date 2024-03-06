@@ -233,6 +233,10 @@ func (mc *mockCommitter) LedgerHeight() (uint64, error) {
 	return args.Get(0).(uint64), args.Get(1).(error)
 }
 
+func (mc *mockCommitter) GetCurrentBlockHash() ([]byte, error) {
+	panic("implement me")
+}
+
 func (mc *mockCommitter) DoesPvtDataInfoExistInLedger(blkNum uint64) (bool, error) {
 	mc.Lock()
 	m := mc.Mock
@@ -766,9 +770,9 @@ func TestBlockingEnqueue(t *testing.T) {
 
 	// Get a block from gossip every 1ms too
 	go func() {
-		rand.Seed(time.Now().UnixNano())
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for i := 1; i <= numBlocksReceived/2; i++ {
-			blockSeq := rand.Intn(numBlocksReceived)
+			blockSeq := r.Intn(numBlocksReceived)
 			rawblock := protoutil.NewBlock(uint64(blockSeq), []byte{})
 			b, _ := pb.Marshal(rawblock)
 			block := &proto.Payload{
@@ -793,7 +797,7 @@ func TestBlockingEnqueue(t *testing.T) {
 		mc.Mock = m
 		mc.Unlock()
 		require.Equal(t, receivedBlock, uint64(receivedBlockCount))
-		if int(receivedBlockCount) == numBlocksReceived {
+		if receivedBlockCount == numBlocksReceived {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)

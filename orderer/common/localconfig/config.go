@@ -38,6 +38,7 @@ type General struct {
 	TLS               TLS
 	Cluster           Cluster
 	Keepalive         Keepalive
+	Backoff           Backoff
 	ConnectionTimeout time.Duration
 	GenesisMethod     string // Deprecated: For compatibility only, will be replaced by BootstrapMethod
 	GenesisFile       string // Deprecated: For compatibility only, will be replaced by BootstrapFile
@@ -53,23 +54,22 @@ type General struct {
 }
 
 type Cluster struct {
-	ListenAddress                        string
-	ListenPort                           uint16
-	ServerCertificate                    string
-	ServerPrivateKey                     string
-	ClientCertificate                    string
-	ClientPrivateKey                     string
-	RootCAs                              []string
-	DialTimeout                          time.Duration
-	RPCTimeout                           time.Duration
-	ReplicationBufferSize                int
-	ReplicationPullTimeout               time.Duration
-	ReplicationRetryTimeout              time.Duration
-	ReplicationBackgroundRefreshInterval time.Duration
-	ReplicationMaxRetries                int
-	SendBufferSize                       int
-	CertExpirationWarningThreshold       time.Duration
-	TLSHandshakeTimeShift                time.Duration
+	ListenAddress                  string
+	ListenPort                     uint16
+	ServerCertificate              string
+	ServerPrivateKey               string
+	ClientCertificate              string
+	ClientPrivateKey               string
+	RootCAs                        []string
+	DialTimeout                    time.Duration
+	RPCTimeout                     time.Duration
+	ReplicationBufferSize          int
+	ReplicationPullTimeout         time.Duration
+	ReplicationRetryTimeout        time.Duration
+	ReplicationMaxRetries          int
+	SendBufferSize                 int
+	CertExpirationWarningThreshold time.Duration
+	TLSHandshakeTimeShift          time.Duration
 }
 
 // Keepalive contains configuration for gRPC servers.
@@ -77,6 +77,13 @@ type Keepalive struct {
 	ServerMinInterval time.Duration
 	ServerInterval    time.Duration
 	ServerTimeout     time.Duration
+}
+
+// Backoff defines the configuration options for GRPC client.
+type Backoff struct {
+	BaseDelay  time.Duration
+	Multiplier float64
+	MaxDelay   time.Duration
 }
 
 // TLS contains configuration for TLS connections.
@@ -159,21 +166,20 @@ var Defaults = TopLevel{
 			Address: "0.0.0.0:6060",
 		},
 		Cluster: Cluster{
-			ReplicationMaxRetries:                12,
-			RPCTimeout:                           time.Second * 7,
-			DialTimeout:                          time.Second * 5,
-			ReplicationBufferSize:                20971520,
-			SendBufferSize:                       100,
-			ReplicationBackgroundRefreshInterval: time.Minute * 5,
-			ReplicationRetryTimeout:              time.Second * 5,
-			ReplicationPullTimeout:               time.Second * 5,
-			CertExpirationWarningThreshold:       time.Hour * 24 * 7,
+			ReplicationMaxRetries:          12,
+			RPCTimeout:                     time.Second * 7,
+			DialTimeout:                    time.Second * 5,
+			ReplicationBufferSize:          20971520,
+			SendBufferSize:                 100,
+			ReplicationRetryTimeout:        time.Second * 5,
+			ReplicationPullTimeout:         time.Second * 5,
+			CertExpirationWarningThreshold: time.Hour * 24 * 7,
 		},
 		LocalMSPDir: "msp",
 		LocalMSPID:  "SampleOrg",
 		BCCSP:       bccsp.GetDefaultOpts(),
 		Authentication: Authentication{
-			TimeWindow: time.Duration(15 * time.Minute),
+			TimeWindow: 15 * time.Minute,
 		},
 		MaxRecvMsgSize: comm.DefaultMaxRecvMsgSize,
 		MaxSendMsgSize: comm.DefaultMaxSendMsgSize,
@@ -307,8 +313,6 @@ func (c *TopLevel) completeInitialization(configDir string) {
 			c.General.Cluster.ReplicationPullTimeout = Defaults.General.Cluster.ReplicationPullTimeout
 		case c.General.Cluster.ReplicationRetryTimeout == 0:
 			c.General.Cluster.ReplicationRetryTimeout = Defaults.General.Cluster.ReplicationRetryTimeout
-		case c.General.Cluster.ReplicationBackgroundRefreshInterval == 0:
-			c.General.Cluster.ReplicationBackgroundRefreshInterval = Defaults.General.Cluster.ReplicationBackgroundRefreshInterval
 		case c.General.Cluster.CertExpirationWarningThreshold == 0:
 			c.General.Cluster.CertExpirationWarningThreshold = Defaults.General.Cluster.CertExpirationWarningThreshold
 

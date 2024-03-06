@@ -17,11 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/common/crypto"
-
-	"github.com/golang/protobuf/ptypes"
 	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/common/util"
@@ -35,19 +33,19 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
 	sourceNodeID      uint64 = 1
 	destinationNodeID uint64 = 2
 	streamID          uint64 = 111
-	tstamp, _                = ptypes.TimestampProto(time.Now().UTC())
 	nodeAuthRequest          = orderer.NodeAuthRequest{
 		Version:   0,
 		FromId:    sourceNodeID,
 		ToId:      destinationNodeID,
 		Channel:   "mychannel",
-		Timestamp: tstamp,
+		Timestamp: timestamppb.Now(),
 	}
 	nodeConsensusRequest = &orderer.ClusterNodeServiceStepRequest{
 		Payload: &orderer.ClusterNodeServiceStepRequest_NodeConrequest{
@@ -153,7 +151,7 @@ func TestClusterServiceStep(t *testing.T) {
 		signer := signingIdentity{clientKeyPair.Signer}
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: sessionBinding,
@@ -274,7 +272,7 @@ func TestClusterServiceStep(t *testing.T) {
 
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: sessionBinding,
@@ -342,7 +340,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -419,7 +417,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 		authRequest.SessionBinding = []byte{}
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -459,7 +457,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 		authRequest.SessionBinding, _ = cluster.GetTLSSessionBinding(stepStream.Context(), bindingHash)
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -510,7 +508,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 		authRequest.SessionBinding, _ = cluster.GetTLSSessionBinding(stepStream.Context(), bindingHash)
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -555,7 +553,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -608,7 +606,7 @@ func TestClusterServiceVerifyAuthRequest(t *testing.T) {
 
 		asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 			Version:        int64(authRequest.Version),
-			Timestamp:      authRequest.Timestamp.String(),
+			Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 			FromId:         strconv.FormatUint(authRequest.FromId, 10),
 			ToId:           strconv.FormatUint(authRequest.ToId, 10),
 			SessionBinding: authRequest.SessionBinding,
@@ -716,7 +714,7 @@ func TestExpirationWarning(t *testing.T) {
 
 	asnSignFields, _ := asn1.Marshal(cluster.AuthRequestSignature{
 		Version:        int64(authRequest.Version),
-		Timestamp:      authRequest.Timestamp.String(),
+		Timestamp:      cluster.EncodeTimestamp(authRequest.Timestamp),
 		FromId:         strconv.FormatUint(authRequest.FromId, 10),
 		ToId:           strconv.FormatUint(authRequest.ToId, 10),
 		SessionBinding: authRequest.SessionBinding,

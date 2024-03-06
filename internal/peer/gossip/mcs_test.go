@@ -92,7 +92,7 @@ func TestPKIidOfCert(t *testing.T) {
 	require.NotNil(t, pkid, "PKID must be different from nil")
 	// Check that pkid is correctly computed
 	id, err := deserializersManager.Deserialize(peerIdentity)
-	require.NoError(t, err, "Failed getting validated identity from [% x]", []byte(peerIdentity))
+	require.NoError(t, err, "Failed getting validated identity from [% x]", peerIdentity)
 	idRaw := append([]byte(id.Mspid), id.IdBytes...)
 	require.NoError(t, err, "Failed marshalling identity identifier [% x]: [%s]", peerIdentity, err)
 	h := sha256.New()
@@ -475,7 +475,7 @@ func mockBlock(t *testing.T, channel string, seqNum uint64, localSigner *mocks.S
 	if len(dataHash) != 0 {
 		block.Header.DataHash = dataHash
 	} else {
-		block.Header.DataHash = protoutil.BlockDataHash(block.Data)
+		block.Header.DataHash = protoutil.ComputeBlockDataHash(block.Data)
 	}
 
 	// Add signer's signature to the block
@@ -518,7 +518,7 @@ func mockBlockBFT(t *testing.T, channel string, seqNum uint64, localSigner *mock
 	if len(dataHash) != 0 {
 		block.Header.DataHash = dataHash
 	} else {
-		block.Header.DataHash = protoutil.BlockDataHash(block.Data)
+		block.Header.DataHash = protoutil.ComputeBlockDataHash(block.Data)
 	}
 
 	ihdr := &common.IdentifierHeader{

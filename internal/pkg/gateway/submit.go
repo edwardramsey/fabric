@@ -50,7 +50,11 @@ func (gs *Server) Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.Su
 
 	logger := logger.With("txID", request.TransactionId)
 	config := gs.getChannelConfig(request.ChannelId)
-	if config.ChannelConfig().Capabilities().ConsensusTypeBFT() {
+	oc, ok := config.OrdererConfig()
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "failed to create block deliverer for channel `%s`, missing OrdererConfig", request.ChannelId)
+	}
+	if oc.ConsensusType() == "BFT" {
 		return gs.submitBFT(ctx, orderers, txn, clusterSize, logger)
 	} else {
 		return gs.submitNonBFT(ctx, orderers, txn, logger)
@@ -151,7 +155,7 @@ func (gs *Server) broadcastToAll(orderers []*orderer, txn *common.Envelope, wait
 // Note that this is different from N-f (the number of correct nodes), when N=3f+3. That is, we have two extra nodes
 // above the minimum required to tolerate f failures.
 func computeBFTQuorum(N uint64) (Q int, F int) {
-	F = int((int(N) - 1) / 3)
+	F = (int(N) - 1) / 3
 	Q = int(math.Ceil((float64(N) + float64(F) + 1) / 2.0))
 	return
 }

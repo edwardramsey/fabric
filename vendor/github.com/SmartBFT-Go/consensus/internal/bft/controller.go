@@ -6,7 +6,6 @@
 package bft
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,7 +81,7 @@ type Proposer interface {
 //
 //go:generate mockery -dir . -name ProposerBuilder -case underscore -output ./mocks/
 type ProposerBuilder interface {
-	NewProposer(leader, proposalSequence, viewNum, decisionsInView uint64, quorumSize int) Proposer
+	NewProposer(leader, proposalSequence, viewNum, decisionsInView uint64, quorumSize int) (Proposer, Phase)
 }
 
 // Controller controls the entire flow of the consensus
@@ -101,6 +100,7 @@ type Controller struct {
 	Logger             api.Logger
 	Assembler          api.Assembler
 	Application        api.Application
+	Deliver            api.Application
 	FailureDetector    FailureDetector
 	Synchronizer       api.Synchronizer
 	Signer             api.Signer
@@ -112,7 +112,7 @@ type Controller struct {
 	Collector          *StateCollector
 	State              State
 	InFlight           *InFlightData
-	MetricsView        *MetricsView
+	MetricsView        *api.MetricsView
 	quorum             int
 
 	currView Proposer
@@ -373,7 +373,7 @@ func (c *Controller) convertViewMessageToHeartbeat(m *protos.Message) *protos.Me
 }
 
 func (c *Controller) startView(proposalSequence uint64) {
-	view := c.ProposerBuilder.NewProposer(c.leaderID(), proposalSequence, c.currViewNumber, c.currDecisionsInView, c.quorum)
+	view, initPhase := c.ProposerBuilder.NewProposer(c.leaderID(), proposalSequence, c.currViewNumber, c.currDecisionsInView, c.quorum)
 
 	c.currViewLock.Lock()
 	c.currView = view
@@ -383,6 +383,12 @@ func (c *Controller) startView(proposalSequence uint64) {
 	role := Follower
 	leader, _ := c.iAmTheLeader()
 	if leader {
+		if initPhase == COMMITTED || initPhase == ABORT {
+			c.Logger.Debugf("Acquiring leader token when starting view with phase %s", initPhase.String())
+			c.acquireLeaderToken()
+		} else {
+			c.Logger.Debugf("Not acquiring leader token when starting view with phase %s", initPhase.String())
+		}
 		role = Leader
 	}
 	c.LeaderMonitor.ChangeRole(role, c.currViewNumber, c.leaderID())
@@ -414,15 +420,15 @@ func (c *Controller) changeView(newViewNumber uint64, newProposalSequence uint64
 	c.Logger.Debugf("Starting view after setting decisions in view to %d", newDecisionsInView)
 	c.startView(newProposalSequence)
 
-	// If I'm the leader, I can claim the leader token.
 	if iAm, _ := c.iAmTheLeader(); iAm {
 		c.Batcher.Reset()
-		c.acquireLeaderToken()
 	}
 }
 
 func (c *Controller) abortView(view uint64) bool {
 	currView := c.getCurrentViewNumber()
+	c.Logger.Debugf("view for abort %d, current view %d", view, currView)
+
 	if view < currView {
 		c.Logger.Debugf("Was asked to abort view %d but the current view with number %d", view, currView)
 		return false
@@ -466,24 +472,13 @@ func (c *Controller) ViewChanged(newViewNumber uint64, newProposalSequence uint6
 	c.viewChange <- viewInfo{proposalSeq: newProposalSequence, viewNumber: newViewNumber}
 }
 
-func (c *Controller) getNextBatch() [][]byte {
-	var validRequests [][]byte
-	for len(validRequests) == 0 { // no valid requests in this batch
-		requests := c.Batcher.NextBatch()
-		if c.stopped() || c.Batcher.Closed() {
-			return nil
-		}
-		validRequests = append(validRequests, requests...)
-	}
-	return validRequests
-}
-
 func (c *Controller) propose() {
-	nextBatch := c.getNextBatch()
-	if len(nextBatch) == 0 {
-		// If our next batch is empty,
-		// it can only be because
-		// the batcher is stopped and so are we.
+	if c.stopped() || c.Batcher.Closed() {
+		return
+	}
+	nextBatch := c.Batcher.NextBatch()
+	if len(nextBatch) == 0 { // no requests in this batch
+		c.acquireLeaderToken() // try again later
 		return
 	}
 	metadata := c.currView.GetMetadata()
@@ -504,6 +499,7 @@ func (c *Controller) run() {
 		case d := <-c.decisionChan:
 			c.decide(d)
 		case newView := <-c.viewChange:
+			c.Logger.Debugf("get newView from viewChange")
 			c.changeView(newView.viewNumber, newView.proposalSeq, 0)
 		case view := <-c.abortViewChan:
 			c.abortView(view)
@@ -512,11 +508,13 @@ func (c *Controller) run() {
 		case <-c.leaderToken:
 			c.propose()
 		case <-c.syncChan:
+			c.Logger.Debugf("get msg from syncChan")
 			view, seq, dec := c.sync()
 			c.MaybePruneRevokedRequests()
 			if view > 0 || seq > 0 {
 				c.changeView(view, seq, dec)
 			} else {
+				c.Logger.Debugf("view and seq is zero")
 				vs := c.ViewSequences.Load()
 				if vs == nil {
 					c.Logger.Panicf("ViewSequences is nil")
@@ -528,13 +526,11 @@ func (c *Controller) run() {
 }
 
 func (c *Controller) decide(d decision) {
-	begin := time.Now()
-	reconfig := c.Application.Deliver(d.proposal, d.signatures)
-	c.MetricsView.LatencyBatchSave.Observe(time.Since(begin).Seconds())
+	c.Logger.Debugf("Delivering to app from Controller decide the last decision proposal")
+	reconfig := c.Deliver.Deliver(d.proposal, d.signatures)
 	if reconfig.InLatestDecision {
 		c.close()
 	}
-	c.Checkpoint.Set(d.proposal, d.signatures)
 	c.Logger.Debugf("Node %d delivered proposal", c.ID)
 	c.removeDeliveredFromPool(d)
 	select {
@@ -594,16 +590,6 @@ func (c *Controller) sync() (viewNum uint64, seq uint64, decisions uint64) {
 		c.ViewChanger.close()
 	}
 
-	if len(syncResponse.RequestDel) != 0 {
-		c.RequestPool.Prune(func(bytes []byte) error {
-			return errors.New("need all delete")
-		})
-
-		for i := range syncResponse.RequestDel {
-			_ = c.RequestPool.RemoveRequest(syncResponse.RequestDel[i])
-		}
-	}
-
 	decision := syncResponse.Latest
 	if decision.Proposal.Metadata == nil {
 		c.Logger.Infof("Synchronizer returned with proposal metadata nil")
@@ -639,6 +625,28 @@ func (c *Controller) sync() (viewNum uint64, seq uint64, decisions uint64) {
 
 	if md.ViewId < c.currViewNumber {
 		c.Logger.Infof("Synchronizer returned with view number %d but the controller is at view number %d", md.ViewId, c.currViewNumber)
+		response := c.fetchState()
+		if response == nil {
+			c.Logger.Infof("Fetching state failed")
+			return 0, 0, 0
+		}
+		if response.View > c.currViewNumber && response.Seq == md.LatestSequence+1 {
+			c.Logger.Infof("Collected state with view %d and sequence %d", response.View, response.Seq)
+			newViewToSave := &protos.SavedMessage{
+				Content: &protos.SavedMessage_NewView{
+					NewView: &protos.ViewMetadata{
+						ViewId:          response.View,
+						LatestSequence:  md.LatestSequence,
+						DecisionsInView: 0,
+					},
+				},
+			}
+			if err := c.State.Save(newViewToSave); err != nil {
+				c.Logger.Panicf("Failed to save message to state, error: %v", err)
+			}
+			c.ViewChanger.InformNewView(response.View)
+			return response.View, response.Seq, 0
+		}
 		return 0, 0, 0
 	}
 
@@ -807,9 +815,6 @@ func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64,
 	c.currViewNumber = startViewNumber
 	c.currDecisionsInView = startDecisionsInView
 	c.startView(startProposalSequence)
-	if iAm, _ := c.iAmTheLeader(); iAm {
-		c.acquireLeaderToken()
-	}
 
 	go func() {
 		defer c.controllerDone.Done()
@@ -948,7 +953,7 @@ func (med *MutuallyExclusiveDeliver) Deliver(proposal types.Proposal, signature 
 	// do not proceed to commit the proposal, but instead invoke a sync and update the checkpoint once more
 	// to match the sync result.
 	latest := med.C.latestSeq()
-	if latest >= pendingProposalMetadata.LatestSequence {
+	if latest != 0 && latest >= pendingProposalMetadata.LatestSequence {
 		med.C.Logger.Infof("Attempted to deliver block %d via view change but meanwhile view change already synced to seq %d, "+
 			"returning result from sync", pendingProposalMetadata.LatestSequence, latest)
 		syncResult := med.C.Synchronizer.Sync()
@@ -960,5 +965,12 @@ func (med *MutuallyExclusiveDeliver) Deliver(proposal types.Proposal, signature 
 		}
 	}
 
-	return med.C.Application.Deliver(proposal, signature)
+	begin := time.Now()
+	result := med.C.Application.Deliver(proposal, signature)
+	med.C.MetricsView.LatencyBatchSave.Observe(time.Since(begin).Seconds())
+
+	// Only set the proposal in case it is later than the already known checkpoint.
+	med.C.Checkpoint.Set(proposal, signature)
+
+	return result
 }

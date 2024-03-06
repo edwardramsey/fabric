@@ -8,8 +8,9 @@ package orderers_test
 
 import (
 	"bytes"
-	"io/ioutil"
+	"os"
 	"sort"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -59,13 +60,13 @@ var _ = Describe("Connection", func() {
 
 	BeforeEach(func() {
 		var err error
-		cert1, err = ioutil.ReadFile("testdata/tlsca.example.com-cert.pem")
+		cert1, err = os.ReadFile("testdata/tlsca.example.com-cert.pem")
 		Expect(err).NotTo(HaveOccurred())
 
-		cert2, err = ioutil.ReadFile("testdata/tlsca.org1.example.com-cert.pem")
+		cert2, err = os.ReadFile("testdata/tlsca.org1.example.com-cert.pem")
 		Expect(err).NotTo(HaveOccurred())
 
-		cert3, err = ioutil.ReadFile("testdata/tlsca.org2.example.com-cert.pem")
+		cert3, err = os.ReadFile("testdata/tlsca.org2.example.com-cert.pem")
 		Expect(err).NotTo(HaveOccurred())
 
 		org1 = orderers.OrdererOrg{
@@ -123,6 +124,50 @@ var _ = Describe("Connection", func() {
 		for _, endpoint := range endpoints {
 			Expect(endpoint.Refreshed).NotTo(BeClosed())
 		}
+	})
+
+	It("endpoint stringer works", func() {
+		for _, endpoint := range endpoints {
+			Expect(endpoint.String()).To(MatchRegexp("Address: org[12]-address[12]"))
+			Expect(endpoint.String()).To(MatchRegexp("CertHash: [A-F0-9]+"))
+		}
+		e := &orderers.Endpoint{Address: "localhost"}
+		Expect(e.String()).To(Equal("Address: localhost, CertHash: <nil>"))
+		e = nil
+		Expect(e.String()).To(Equal("<nil>"))
+	})
+
+	It("returns shuffled endpoints", func() { // there is a chance of failure here, but it is very small.
+		combinationSet := make(map[string]bool)
+		for i := 0; i < 10000; i++ {
+			shuffledEndpoints := cs.ShuffledEndpoints()
+			Expect(stripEndpoints(shuffledEndpoints)).To(ConsistOf(
+				stripEndpoints(endpoints),
+			))
+			key := strings.Builder{}
+			for _, ep := range shuffledEndpoints {
+				key.WriteString(ep.Address)
+				key.WriteString(" ")
+			}
+			combinationSet[key.String()] = true
+		}
+
+		Expect(len(combinationSet)).To(Equal(4 * 3 * 2 * 1))
+	})
+
+	It("returns random endpoint", func() { // there is a chance of failure here, but it is very small.
+		combinationMap := make(map[string]*orderers.Endpoint)
+		for i := 0; i < 10000; i++ {
+			r, _ := cs.RandomEndpoint()
+			combinationMap[r.Address] = r
+		}
+		var all []*orderers.Endpoint
+		for _, ep := range combinationMap {
+			all = append(all, ep)
+		}
+		Expect(stripEndpoints(all)).To(ConsistOf(
+			stripEndpoints(endpoints),
+		))
 	})
 
 	When("an update does not modify the endpoint set", func() {

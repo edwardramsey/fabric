@@ -4,6 +4,8 @@ Copyright IBM Corp. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
 */
 
+// Package deliver contains an implementation of the server-side handlers of the gRPC delivery service.
+// The delivery service runs in the orderer and is used to deliver blocks to peers, as well as to other orderers.
 package deliver
 
 import (
@@ -328,12 +330,18 @@ func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.E
 
 		logger.Debugf("[channel: %s] Delivering block [%d] for (%p) for %s", chdr.ChannelId, block.Header.Number, seekInfo, addr)
 
-		if seekInfo.ContentType == ab.SeekInfo_HEADER_WITH_SIG {
-			block.Data = nil
+		// Data blocks carry nil data for block attestations.
+		// Never mutate the block received from the iterator as it is from a cache.
+		block2send := block
+		if seekInfo.ContentType == ab.SeekInfo_HEADER_WITH_SIG && !protoutil.IsConfigBlock(block) {
+			block2send = &cb.Block{
+				Header:   block.Header,
+				Metadata: block.Metadata,
+			}
 		}
 
 		signedData := &protoutil.SignedData{Data: envelope.Payload, Identity: shdr.Creator, Signature: envelope.Signature}
-		if err := srv.SendBlockResponse(block, chdr.ChannelId, chain, signedData); err != nil {
+		if err := srv.SendBlockResponse(block2send, chdr.ChannelId, chain, signedData); err != nil {
 			logger.Warningf("[channel: %s] Error sending to %s: %s", chdr.ChannelId, addr, err)
 			return cb.Status_INTERNAL_SERVER_ERROR, err
 		}

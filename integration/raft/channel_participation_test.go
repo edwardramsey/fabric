@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -51,7 +51,7 @@ var _ = Describe("ChannelParticipation", func() {
 
 	BeforeEach(func() {
 		var err error
-		testDir, err = ioutil.TempDir("", "channel-participation")
+		testDir, err = os.MkdirTemp("", "channel-participation")
 		Expect(err).NotTo(HaveOccurred())
 
 		client, err = docker.NewClientFromEnv()
@@ -245,7 +245,7 @@ var _ = Describe("ChannelParticipation", func() {
 			}))
 
 			By("submitting transaction to orderer1")
-			env := CreateBroadcastEnvelope(network, peer, "participation-trophy", []byte("hello"))
+			env := ordererclient.CreateBroadcastEnvelope(network, peer, "participation-trophy", []byte("hello"))
 			resp, err := ordererclient.Broadcast(network, orderer1, env)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.Status).To(Equal(common.Status_BAD_REQUEST))
@@ -552,7 +552,7 @@ var _ = Describe("ChannelParticipation", func() {
 				blockPath := filepath.Join(joinBlockFileRepoPath, "participation-trophy.join")
 				configBlockBytes, err := proto.Marshal(configBlock)
 				Expect(err).NotTo(HaveOccurred())
-				err = ioutil.WriteFile(blockPath, configBlockBytes, 0o600)
+				err = os.WriteFile(blockPath, configBlockBytes, 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				By("starting third orderer")
@@ -579,7 +579,7 @@ var _ = Describe("ChannelParticipation", func() {
 				blockPath := filepath.Join(joinBlockFileRepoPath, "participation-trophy.join")
 				configBlockBytes, err := proto.Marshal(configBlock)
 				Expect(err).NotTo(HaveOccurred())
-				err = ioutil.WriteFile(blockPath, configBlockBytes, 0o600)
+				err = os.WriteFile(blockPath, configBlockBytes, 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				// create the ledger directory
@@ -611,7 +611,7 @@ var _ = Describe("ChannelParticipation", func() {
 				blockPath := filepath.Join(joinBlockFileRepoPath, "participation-trophy.join")
 				configBlockBytes, err := proto.Marshal(configBlock)
 				Expect(err).NotTo(HaveOccurred())
-				err = ioutil.WriteFile(blockPath, configBlockBytes, 0o600)
+				err = os.WriteFile(blockPath, configBlockBytes, 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				// create the ledger and add the genesis block
@@ -702,14 +702,14 @@ var _ = Describe("ChannelParticipation", func() {
 // submit a transaction signed by the peer and ensure it was
 // committed to the ledger
 func submitPeerTxn(o *nwo.Orderer, peer *nwo.Peer, n *nwo.Network, expectedChannelInfo channelparticipation.ChannelInfo) {
-	env := CreateBroadcastEnvelope(n, peer, expectedChannelInfo.Name, []byte("hello"))
+	env := ordererclient.CreateBroadcastEnvelope(n, peer, expectedChannelInfo.Name, []byte("hello"))
 	submitTxn(o, env, n, expectedChannelInfo)
 }
 
 // submit a transaction signed by the orderer and ensure it is
 // committed to the ledger
 func submitOrdererTxn(o *nwo.Orderer, n *nwo.Network, expectedChannelInfo channelparticipation.ChannelInfo) {
-	env := CreateBroadcastEnvelope(n, o, expectedChannelInfo.Name, []byte("hello"))
+	env := ordererclient.CreateBroadcastEnvelope(n, o, expectedChannelInfo.Name, []byte("hello"))
 	submitTxn(o, env, n, expectedChannelInfo)
 }
 
@@ -822,7 +822,7 @@ func applicationChannelGenesisBlock(n *nwo.Network, orderers []*nwo.Orderer, pee
 // parseCertificate loads the PEM-encoded x509 certificate at the specified
 // path.
 func parseCertificate(path string) *x509.Certificate {
-	certBytes, err := ioutil.ReadFile(path)
+	certBytes, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 	pemBlock, _ := pem.Decode(certBytes)
 	cert, err := x509.ParseCertificate(pemBlock.Bytes)
@@ -832,7 +832,7 @@ func parseCertificate(path string) *x509.Certificate {
 
 // parsePrivateKey loads the PEM-encoded private key at the specified path.
 func parsePrivateKey(path string) crypto.PrivateKey {
-	pkBytes, err := ioutil.ReadFile(path)
+	pkBytes, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 	pemBlock, _ := pem.Decode(pkBytes)
 	privateKey, err := x509.ParsePKCS8PrivateKey(pemBlock.Bytes)
@@ -1002,7 +1002,7 @@ func doBodyFailure(client *http.Client, req *http.Request, expectedStatus int, e
 	resp, err := client.Do(req)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resp.StatusCode).To(Equal(expectedStatus))
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	Expect(err).NotTo(HaveOccurred())
 	resp.Body.Close()
 
@@ -1081,7 +1081,7 @@ func createJoinBlockDefineSystemChannel(channelID string) *common.Block {
 			}),
 		},
 	}
-	block.Header.DataHash = protoutil.BlockDataHash(block.Data)
+	block.Header.DataHash = protoutil.ComputeBlockDataHash(block.Data)
 	protoutil.InitBlockMetadata(block)
 
 	return block

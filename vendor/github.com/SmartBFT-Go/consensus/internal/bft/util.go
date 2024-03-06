@@ -262,8 +262,8 @@ type ProposalMaker struct {
 	FailureDetector    FailureDetector
 	Sync               Synchronizer
 	Logger             api.Logger
-	MetricsBlacklist   *MetricsBlacklist
-	MetricsView        *MetricsView
+	MetricsBlacklist   *api.MetricsBlacklist
+	MetricsView        *api.MetricsView
 	Comm               Comm
 	Verifier           api.Verifier
 	Signer             api.Signer
@@ -276,7 +276,7 @@ type ProposalMaker struct {
 }
 
 // NewProposer returns a new view
-func (pm *ProposalMaker) NewProposer(leader, proposalSequence, viewNum, decisionsInView uint64, quorumSize int) Proposer {
+func (pm *ProposalMaker) NewProposer(leader, proposalSequence, viewNum, decisionsInView uint64, quorumSize int) (proposer Proposer, phase Phase) {
 	view := &View{
 		RetrieveCheckpoint: pm.Checkpoint.Get,
 		DecisionsPerLeader: pm.DecisionsPerLeader,
@@ -330,7 +330,7 @@ func (pm *ProposalMaker) NewProposer(leader, proposalSequence, viewNum, decision
 	view.MetricsView.DecisionsInView.Set(float64(view.DecisionsInView))
 	view.MetricsView.Phase.Set(float64(view.Phase))
 
-	return view
+	return view, view.Phase
 }
 
 // ViewSequence indicates if a view is currently active and its current proposal sequence
@@ -426,7 +426,7 @@ type blacklist struct {
 	currView           uint64
 	preparesFrom       map[uint64]*protos.PreparesFrom
 	logger             api.Logger
-	metricsBlacklist   *MetricsBlacklist
+	metricsBlacklist   *api.MetricsBlacklist
 	f                  int
 	decisionsPerLeader uint64
 }
@@ -486,7 +486,7 @@ func (bl blacklist) computeUpdate() []uint64 {
 	for _, node := range bl.nodes {
 		inBlacklist := newBlacklistMap[node]
 		bl.metricsBlacklist.NodesInBlackList.With(
-			bl.metricsBlacklist.LabelsForWith(nameBlackListNodeID, strconv.FormatUint(node, 10))...,
+			bl.metricsBlacklist.LabelsForWith("blackid", strconv.FormatUint(node, 10))...,
 		).Set(btoi(inBlacklist))
 	}
 	bl.metricsBlacklist.CountBlackList.Set(float64(len(newBlacklist)))

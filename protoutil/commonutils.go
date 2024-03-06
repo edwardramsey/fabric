@@ -188,7 +188,24 @@ func SignOrPanic(signer identity.Signer, msg []byte) []byte {
 // IsConfigBlock validates whenever given block contains configuration
 // update transaction
 func IsConfigBlock(block *cb.Block) bool {
-	envelope, err := ExtractEnvelope(block, 0)
+	if block.Data == nil {
+		return false
+	}
+
+	return HasConfigTx(block.Data)
+}
+
+func HasConfigTx(blockdata *cb.BlockData) bool {
+	if blockdata.Data == nil {
+		return false
+	}
+
+	if len(blockdata.Data) != 1 {
+		return false
+	}
+
+	marshaledEnvelope := blockdata.Data[0]
+	envelope, err := GetEnvelopeFromBlock(marshaledEnvelope)
 	if err != nil {
 		return false
 	}

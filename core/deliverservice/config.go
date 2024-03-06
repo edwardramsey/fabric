@@ -8,7 +8,7 @@ package deliverservice
 
 import (
 	"encoding/pem"
-	"io/ioutil"
+	"os"
 	"time"
 
 	"github.com/hyperledger/fabric/core/config"
@@ -23,6 +23,8 @@ const (
 	DefaultReConnectBackoffThreshold   = time.Hour * 1
 	DefaultReConnectTotalTimeThreshold = time.Second * 60 * 60
 	DefaultConnectionTimeout           = time.Second * 3
+	DefaultBlockCensorshipTimeoutKey   = time.Second * 30
+	DefaultMinimalReconnectInterval    = time.Millisecond * 100
 )
 
 // DeliverServiceConfig is the struct that defines the deliverservice configuration.
@@ -31,7 +33,7 @@ type DeliverServiceConfig struct {
 	PeerTLSEnabled bool
 	// BlockGossipEnabled enables block forwarding via gossip
 	BlockGossipEnabled bool
-	// ReConnectBackoffThreshold sets the delivery service maximal delay between consencutive retries.
+	// ReConnectBackoffThreshold sets the delivery service maximal delay between consecutive retries.
 	ReConnectBackoffThreshold time.Duration
 	// ReconnectTotalTimeThreshold sets the total time the delivery service may spend in reconnection attempts
 	// until its retry logic gives up and returns an error.
@@ -42,7 +44,11 @@ type DeliverServiceConfig struct {
 	KeepaliveOptions comm.KeepaliveOptions
 	// SecOpts provides the TLS info for connections
 	SecOpts comm.SecureOptions
-
+	// If a certain header from a header receiver is in front of the block receiver for more that this time, a
+	// censorship event is declared and the block source is changed.
+	BlockCensorshipTimeoutKey time.Duration
+	// The initial value of the actual retry interval, which is increased on every failed retry
+	MinimalReconnectInterval time.Duration
 	// OrdererEndpointOverrides is a map of orderer addresses which should be
 	// re-mapped to a different orderer endpoint.
 	OrdererEndpointOverrides map[string]*orderers.Endpoint
@@ -76,7 +82,7 @@ func LoadOverridesMap() (map[string]*orderers.Endpoint, error) {
 	for _, override := range overrides {
 		var rootCerts [][]byte
 		if override.CACertsFile != "" {
-			pem, err := ioutil.ReadFile(override.CACertsFile)
+			pem, err := os.ReadFile(override.CACertsFile)
 			if err != nil {
 				logger.Warningf("could not read file '%s' specified for caCertsFile of orderer endpoint override from '%s' to '%s': %s", override.CACertsFile, override.From, override.To, err)
 				continue
@@ -124,6 +130,24 @@ func (c *DeliverServiceConfig) loadDeliverServiceConfig() {
 	}
 	c.BlockGossipEnabled = enabledConfigOptionMissing || viper.GetBool(enabledKey)
 
+	blockCensorshipTimeoutKey := "peer.deliveryclient.blockCensorshipTimeoutKey"
+	blockCensorshipTimeoutOptionMissing := !viper.IsSet(blockCensorshipTimeoutKey)
+	if blockCensorshipTimeoutOptionMissing {
+		c.BlockCensorshipTimeoutKey = DefaultBlockCensorshipTimeoutKey
+		logger.Infof("peer.deliveryclient.blockCensorshipTimeoutKey is not set, defaulting to %d s.", DefaultBlockCensorshipTimeoutKey)
+	} else {
+		c.BlockCensorshipTimeoutKey = viper.GetDuration(blockCensorshipTimeoutKey)
+	}
+
+	minimalReconnectInterval := "peer.deliveryclient.minimalReconnectInterval"
+	MinimalReconnectIntervalOptionMissing := !viper.IsSet(minimalReconnectInterval)
+	if MinimalReconnectIntervalOptionMissing {
+		c.MinimalReconnectInterval = DefaultMinimalReconnectInterval
+		logger.Infof("peer.deliveryclient.minimalReconnectInterval is not set, defaulting to %d ms.", DefaultMinimalReconnectInterval)
+	} else {
+		c.MinimalReconnectInterval = viper.GetDuration(minimalReconnectInterval)
+	}
+
 	c.PeerTLSEnabled = viper.GetBool("peer.tls.enabled")
 
 	c.ReConnectBackoffThreshold = viper.GetDuration("peer.deliveryclient.reConnectBackoffThreshold")
@@ -165,12 +189,12 @@ func (c *DeliverServiceConfig) loadDeliverServiceConfig() {
 			keyFile = config.GetPath("peer.tls.key.file")
 		}
 
-		keyPEM, err := ioutil.ReadFile(keyFile)
+		keyPEM, err := os.ReadFile(keyFile)
 		if err != nil {
 			panic(errors.WithMessagef(err, "unable to load key at '%s'", keyFile))
 		}
 		c.SecOpts.Key = keyPEM
-		certPEM, err := ioutil.ReadFile(certFile)
+		certPEM, err := os.ReadFile(certFile)
 		if err != nil {
 			panic(errors.WithMessagef(err, "unable to load cert at '%s'", certFile))
 		}

@@ -11,35 +11,36 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperledger/fabric/protoutil"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/flogging"
-	gossipcommon "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/internal/pkg/peer/blocksprovider"
 	"github.com/hyperledger/fabric/internal/pkg/peer/blocksprovider/fake"
 	"github.com/hyperledger/fabric/internal/pkg/peer/orderers"
-	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
-var _ = Describe("Blocksprovider", func() {
+var _ = Describe("CFT-Deliverer", func() {
 	var (
 		d                           *blocksprovider.Deliverer
 		ccs                         []*grpc.ClientConn
 		fakeDialer                  *fake.Dialer
-		fakeGossipServiceAdapter    *fake.GossipServiceAdapter
+		fakeBlockHandler            *fake.BlockHandler
 		fakeOrdererConnectionSource *fake.OrdererConnectionSource
 		fakeLedgerInfo              *fake.LedgerInfo
-		fakeBlockVerifier           *fake.BlockVerifier
+		fakeUpdatableBlockVerifier  *fake.UpdatableBlockVerifier
 		fakeSigner                  *fake.Signer
 		fakeDeliverStreamer         *fake.DeliverStreamer
 		fakeDeliverClient           *fake.DeliverClient
 		fakeSleeper                 *fake.Sleeper
+		fakeDurationExceededHandler *fake.DurationExceededHandler
 		doneC                       chan struct{}
 		recvStep                    chan struct{}
 		endC                        chan struct{}
@@ -59,15 +60,15 @@ var _ = Describe("Blocksprovider", func() {
 		fakeDialer.DialStub = func(string, [][]byte) (*grpc.ClientConn, error) {
 			mutex.Lock()
 			defer mutex.Unlock()
-			cc, err := grpc.Dial("", grpc.WithInsecure())
+			cc, err := grpc.Dial("localhost", grpc.WithTransportCredentials(insecure.NewCredentials()))
 			ccs = append(ccs, cc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cc.GetState()).NotTo(Equal(connectivity.Shutdown))
 			return cc, nil
 		}
 
-		fakeGossipServiceAdapter = &fake.GossipServiceAdapter{}
-		fakeBlockVerifier = &fake.BlockVerifier{}
+		fakeBlockHandler = &fake.BlockHandler{}
+		fakeUpdatableBlockVerifier = &fake.UpdatableBlockVerifier{}
 		fakeSigner = &fake.Signer{}
 
 		fakeLedgerInfo = &fake.LedgerInfo{}
@@ -99,22 +100,27 @@ var _ = Describe("Blocksprovider", func() {
 		fakeDeliverStreamer = &fake.DeliverStreamer{}
 		fakeDeliverStreamer.DeliverReturns(fakeDeliverClient, nil)
 
+		fakeDurationExceededHandler = &fake.DurationExceededHandler{}
+		fakeDurationExceededHandler.DurationExceededHandlerReturns(false)
+
 		d = &blocksprovider.Deliverer{
-			ChannelID:         "channel-id",
-			Gossip:            fakeGossipServiceAdapter,
-			Ledger:            fakeLedgerInfo,
-			BlockVerifier:     fakeBlockVerifier,
-			Dialer:            fakeDialer,
-			Orderers:          fakeOrdererConnectionSource,
-			DoneC:             doneC,
-			Signer:            fakeSigner,
-			DeliverStreamer:   fakeDeliverStreamer,
-			Logger:            flogging.MustGetLogger("blocksprovider"),
-			TLSCertHash:       []byte("tls-cert-hash"),
-			MaxRetryDuration:  time.Hour,
-			MaxRetryDelay:     10 * time.Second,
-			InitialRetryDelay: 100 * time.Millisecond,
+			ChannelID:                       "channel-id",
+			BlockHandler:                    fakeBlockHandler,
+			Ledger:                          fakeLedgerInfo,
+			UpdatableBlockVerifier:          fakeUpdatableBlockVerifier,
+			Dialer:                          fakeDialer,
+			Orderers:                        fakeOrdererConnectionSource,
+			DoneC:                           make(chan struct{}),
+			Signer:                          fakeSigner,
+			DeliverStreamer:                 fakeDeliverStreamer,
+			Logger:                          flogging.MustGetLogger("blocksprovider"),
+			TLSCertHash:                     []byte("tls-cert-hash"),
+			MaxRetryDuration:                time.Hour,
+			MaxRetryDurationExceededHandler: fakeDurationExceededHandler.DurationExceededHandler,
+			MaxRetryInterval:                10 * time.Second,
+			InitialRetryInterval:            100 * time.Millisecond,
 		}
+		d.Initialize()
 
 		fakeSleeper = &fake.Sleeper{}
 		blocksprovider.SetSleeper(d, fakeSleeper)
@@ -129,6 +135,7 @@ var _ = Describe("Blocksprovider", func() {
 	})
 
 	AfterEach(func() {
+		d.Stop()
 		close(doneC)
 		<-endC
 	})
@@ -219,7 +226,7 @@ var _ = Describe("Blocksprovider", func() {
 	When("the dialer returns an error", func() {
 		BeforeEach(func() {
 			fakeDialer.DialReturnsOnCall(0, nil, fmt.Errorf("fake-dial-error"))
-			cc, err := grpc.Dial("", grpc.WithInsecure())
+			cc, err := grpc.Dial("localhost", grpc.WithTransportCredentials(insecure.NewCredentials()))
 			Expect(err).NotTo(HaveOccurred())
 			fakeDialer.DialReturnsOnCall(1, cc, nil)
 		})
@@ -267,17 +274,101 @@ var _ = Describe("Blocksprovider", func() {
 
 	When("the consecutive errors are unbounded and the peer is not a static leader", func() {
 		BeforeEach(func() {
+			fakeDurationExceededHandler.DurationExceededHandlerReturns(true)
 			fakeDeliverStreamer.DeliverReturns(nil, fmt.Errorf("deliver-error"))
 			fakeDeliverStreamer.DeliverReturnsOnCall(500, fakeDeliverClient, nil)
 		})
 
 		It("hits the maximum sleep time value in an exponential fashion and retries until exceeding the max retry duration", func() {
-			d.YieldLeadership = true
-			Eventually(fakeSleeper.SleepCallCount).Should(Equal(380))
+			Eventually(fakeDurationExceededHandler.DurationExceededHandlerCallCount).Should(BeNumerically(">", 0))
+			Eventually(endC).Should(BeClosed())
+			Eventually(fakeSleeper.SleepCallCount, 5*time.Second).Should(Equal(380))
 			Expect(fakeSleeper.SleepArgsForCall(25)).To(Equal(9539 * time.Millisecond))
 			Expect(fakeSleeper.SleepArgsForCall(26)).To(Equal(10 * time.Second))
 			Expect(fakeSleeper.SleepArgsForCall(27)).To(Equal(10 * time.Second))
 			Expect(fakeSleeper.SleepArgsForCall(379)).To(Equal(10 * time.Second))
+			Expect(fakeDurationExceededHandler.DurationExceededHandlerCallCount()).Should(Equal(1))
+		})
+	})
+
+	When("the consecutive errors are coming in short bursts and the peer is not a static leader", func() {
+		BeforeEach(func() {
+			// appease the race detector
+			doneC := doneC
+			recvStep := recvStep
+			fakeDeliverClient := fakeDeliverClient
+
+			fakeDeliverClient.CloseSendStub = func() error {
+				if fakeDeliverClient.CloseSendCallCount() >= 1000 {
+					select {
+					case <-doneC:
+					case recvStep <- struct{}{}:
+					}
+				}
+				return nil
+			}
+			fakeDeliverClient.RecvStub = func() (*orderer.DeliverResponse, error) {
+				c := fakeDeliverClient.RecvCallCount()
+				switch c {
+				case 300:
+					return &orderer.DeliverResponse{
+						Type: &orderer.DeliverResponse_Block{
+							Block: &common.Block{
+								Header: &common.BlockHeader{
+									Number: 8,
+								},
+							},
+						},
+					}, nil
+				case 600:
+					return &orderer.DeliverResponse{
+						Type: &orderer.DeliverResponse_Block{
+							Block: &common.Block{
+								Header: &common.BlockHeader{
+									Number: 9,
+								},
+							},
+						},
+					}, nil
+				case 900:
+					return &orderer.DeliverResponse{
+						Type: &orderer.DeliverResponse_Block{
+							Block: &common.Block{
+								Header: &common.BlockHeader{
+									Number: 9,
+								},
+							},
+						},
+					}, nil
+				default:
+					if c < 900 {
+						return nil, fmt.Errorf("fake-recv-error-XXX")
+					}
+
+					select {
+					case <-recvStep:
+						return nil, fmt.Errorf("fake-recv-step-error-XXX")
+					case <-doneC:
+						return nil, nil
+					}
+				}
+			}
+			fakeDurationExceededHandler.DurationExceededHandlerReturns(true)
+		})
+
+		It("hits the maximum sleep time value in an exponential fashion and retries but does not exceed the max retry duration", func() {
+			Eventually(fakeSleeper.SleepCallCount, 10*time.Second).Should(Equal(897))
+			Expect(fakeSleeper.SleepArgsForCall(0)).To(Equal(100 * time.Millisecond))
+			Expect(fakeSleeper.SleepArgsForCall(25)).To(Equal(9539 * time.Millisecond))
+			Expect(fakeSleeper.SleepArgsForCall(26)).To(Equal(10 * time.Second))
+			Expect(fakeSleeper.SleepArgsForCall(27)).To(Equal(10 * time.Second))
+			Expect(fakeSleeper.SleepArgsForCall(298)).To(Equal(10 * time.Second))
+			Expect(fakeSleeper.SleepArgsForCall(299)).To(Equal(100 * time.Millisecond))
+			Expect(fakeSleeper.SleepArgsForCall(2*299 - 1)).To(Equal(10 * time.Second))
+			Expect(fakeSleeper.SleepArgsForCall(2 * 299)).To(Equal(100 * time.Millisecond))
+			Expect(fakeSleeper.SleepArgsForCall(3*299 - 1)).To(Equal(10 * time.Second))
+
+			Expect(fakeDurationExceededHandler.DurationExceededHandlerCallCount()).Should(Equal(0))
 		})
 	})
 
@@ -288,21 +379,21 @@ var _ = Describe("Blocksprovider", func() {
 		})
 
 		It("hits the maximum sleep time value in an exponential fashion and retries indefinitely", func() {
-			d.YieldLeadership = false
-			Eventually(fakeSleeper.SleepCallCount).Should(Equal(500))
+			Eventually(fakeSleeper.SleepCallCount, 5*time.Second).Should(Equal(500))
 			Expect(fakeSleeper.SleepArgsForCall(25)).To(Equal(9539 * time.Millisecond))
 			Expect(fakeSleeper.SleepArgsForCall(26)).To(Equal(10 * time.Second))
 			Expect(fakeSleeper.SleepArgsForCall(27)).To(Equal(10 * time.Second))
-			Expect(fakeSleeper.SleepArgsForCall(379)).To(Equal(10 * time.Second))
+			Expect(fakeSleeper.SleepArgsForCall(499)).To(Equal(10 * time.Second))
+			Eventually(fakeDurationExceededHandler.DurationExceededHandlerCallCount).Should(Equal(120))
 		})
 	})
 
 	When("an error occurs, then a block is successfully delivered", func() {
 		BeforeEach(func() {
 			fakeDeliverStreamer.DeliverReturnsOnCall(0, nil, fmt.Errorf("deliver-error"))
-			fakeDeliverStreamer.DeliverReturnsOnCall(1, fakeDeliverClient, nil)
 			fakeDeliverStreamer.DeliverReturnsOnCall(1, nil, fmt.Errorf("deliver-error"))
 			fakeDeliverStreamer.DeliverReturnsOnCall(2, nil, fmt.Errorf("deliver-error"))
+			fakeDeliverStreamer.DeliverReturnsOnCall(3, fakeDeliverClient, nil)
 		})
 
 		It("sleeps in an exponential fashion and retries until dial is successful", func() {
@@ -456,10 +547,8 @@ var _ = Describe("Blocksprovider", func() {
 		})
 
 		It("checks the validity of the block", func() {
-			Eventually(fakeBlockVerifier.VerifyBlockCallCount).Should(Equal(1))
-			channelID, blockNum, block := fakeBlockVerifier.VerifyBlockArgsForCall(0)
-			Expect(channelID).To(Equal(gossipcommon.ChannelID("channel-id")))
-			Expect(blockNum).To(Equal(uint64(8)))
+			Eventually(fakeUpdatableBlockVerifier.VerifyBlockCallCount).Should(Equal(1))
+			block := fakeUpdatableBlockVerifier.VerifyBlockArgsForCall(0)
 			Expect(proto.Equal(block, &common.Block{
 				Header: &common.BlockHeader{
 					Number: 8,
@@ -469,7 +558,7 @@ var _ = Describe("Blocksprovider", func() {
 
 		When("the block is invalid", func() {
 			BeforeEach(func() {
-				fakeBlockVerifier.VerifyBlockReturns(fmt.Errorf("fake-verify-error"))
+				fakeUpdatableBlockVerifier.VerifyBlockReturns(fmt.Errorf("fake-verify-error"))
 			})
 
 			It("disconnects, sleeps, and tries again", func() {
@@ -481,23 +570,23 @@ var _ = Describe("Blocksprovider", func() {
 			})
 		})
 
-		It("adds the payload to gossip", func() {
-			Eventually(fakeGossipServiceAdapter.AddPayloadCallCount).Should(Equal(1))
-			channelID, payload := fakeGossipServiceAdapter.AddPayloadArgsForCall(0)
-			Expect(channelID).To(Equal("channel-id"))
-			Expect(payload).To(Equal(&gossip.Payload{
-				Data: protoutil.MarshalOrPanic(&common.Block{
+		When("the block is valid", func() {
+			It("handle the block", func() {
+				Eventually(fakeBlockHandler.HandleBlockCallCount).Should(Equal(1))
+				channelID, block := fakeBlockHandler.HandleBlockArgsForCall(0)
+				Expect(channelID).To(Equal("channel-id"))
+				Expect(block).To(Equal(&common.Block{
 					Header: &common.BlockHeader{
 						Number: 8,
 					},
-				}),
-				SeqNum: 8,
-			}))
+				},
+				))
+			})
 		})
 
-		When("adding the payload fails", func() {
+		When("handling the block fails", func() {
 			BeforeEach(func() {
-				fakeGossipServiceAdapter.AddPayloadReturns(fmt.Errorf("payload-error"))
+				fakeBlockHandler.HandleBlockReturns(fmt.Errorf("payload-error"))
 			})
 
 			It("disconnects, sleeps, and tries again", func() {
@@ -508,49 +597,81 @@ var _ = Describe("Blocksprovider", func() {
 				Expect(len(ccs)).To(Equal(2))
 			})
 		})
+	})
 
-		It("gossips the block to the other peers", func() {
-			Eventually(fakeGossipServiceAdapter.GossipCallCount).Should(Equal(1))
-			msg := fakeGossipServiceAdapter.GossipArgsForCall(0)
-			Expect(msg).To(Equal(&gossip.GossipMessage{
-				Nonce:   0,
-				Tag:     gossip.GossipMessage_CHAN_AND_ORG,
-				Channel: []byte("channel-id"),
-				Content: &gossip.GossipMessage_DataMsg{
-					DataMsg: &gossip.DataMessage{
-						Payload: &gossip.Payload{
-							Data: protoutil.MarshalOrPanic(&common.Block{
-								Header: &common.BlockHeader{
-									Number: 8,
-								},
-							}),
-							SeqNum: 8,
-						},
+	When("the deliver client returns a config block", func() {
+		var env *common.Envelope
+
+		BeforeEach(func() {
+			// appease the race detector
+			doneC := doneC
+			recvStep := recvStep
+			fakeDeliverClient := fakeDeliverClient
+
+			env = &common.Envelope{
+				Payload: protoutil.MarshalOrPanic(&common.Payload{
+					Header: &common.Header{
+						ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
+							Type:      int32(common.HeaderType_CONFIG),
+							ChannelId: "test-chain",
+						}),
 					},
+					Data: []byte("test bytes"),
+				}),
+			}
+
+			configBlock := &common.Block{
+				Header: &common.BlockHeader{Number: 8},
+				Data: &common.BlockData{
+					Data: [][]byte{protoutil.MarshalOrPanic(env)},
 				},
-			}))
+			}
+
+			fakeDeliverClient.RecvStub = func() (*orderer.DeliverResponse, error) {
+				if fakeDeliverClient.RecvCallCount() == 1 {
+					return &orderer.DeliverResponse{
+						Type: &orderer.DeliverResponse_Block{
+							Block: configBlock,
+						},
+					}, nil
+				}
+				select {
+				case <-recvStep:
+					return nil, fmt.Errorf("fake-recv-step-error")
+				case <-doneC:
+					return nil, nil
+				}
+			}
 		})
 
-		When("gossip dissemination is disabled", func() {
-			BeforeEach(func() {
-				d.BlockGossipDisabled = true
-			})
+		It("receives the block and loops, not sleeping", func() {
+			Eventually(fakeDeliverClient.RecvCallCount).Should(Equal(2))
+			Expect(fakeSleeper.SleepCallCount()).To(Equal(0))
+		})
 
-			It("doesn't gossip, only adds to the payload buffer", func() {
-				Eventually(fakeGossipServiceAdapter.AddPayloadCallCount).Should(Equal(1))
-				channelID, payload := fakeGossipServiceAdapter.AddPayloadArgsForCall(0)
-				Expect(channelID).To(Equal("channel-id"))
-				Expect(payload).To(Equal(&gossip.Payload{
-					Data: protoutil.MarshalOrPanic(&common.Block{
-						Header: &common.BlockHeader{
-							Number: 8,
-						},
-					}),
-					SeqNum: 8,
-				}))
+		It("checks the validity of the block", func() {
+			Eventually(fakeUpdatableBlockVerifier.VerifyBlockCallCount).Should(Equal(1))
+			block := fakeUpdatableBlockVerifier.VerifyBlockArgsForCall(0)
+			Expect(proto.Equal(block, &common.Block{
+				Header: &common.BlockHeader{Number: 8},
+				Data: &common.BlockData{
+					Data: [][]byte{protoutil.MarshalOrPanic(env)},
+				},
+			})).To(BeTrue())
+		})
 
-				Consistently(fakeGossipServiceAdapter.GossipCallCount).Should(Equal(0))
-			})
+		It("handle the block and updates the verifier config", func() {
+			Eventually(fakeBlockHandler.HandleBlockCallCount).Should(Equal(1))
+			channelID, block := fakeBlockHandler.HandleBlockArgsForCall(0)
+			Expect(channelID).To(Equal("channel-id"))
+			Expect(block).To(Equal(&common.Block{
+				Header: &common.BlockHeader{Number: 8},
+				Data: &common.BlockData{
+					Data: [][]byte{protoutil.MarshalOrPanic(env)},
+				},
+			},
+			))
+			Eventually(fakeUpdatableBlockVerifier.VerifyBlockCallCount).Should(Equal(1))
 		})
 	})
 
