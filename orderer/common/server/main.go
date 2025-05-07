@@ -19,19 +19,19 @@ import (
 	"syscall"
 	"time"
 
-	ab "github.com/hyperledger/fabric-protos-go/orderer"
-	"github.com/hyperledger/fabric/bccsp"
-	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/bccsp/factory"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	floggingmetrics "github.com/hyperledger/fabric-lib-go/common/flogging/metrics"
+	"github.com/hyperledger/fabric-lib-go/common/metrics"
+	"github.com/hyperledger/fabric-lib-go/common/metrics/disabled"
+	ab "github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/fabhttp"
-	"github.com/hyperledger/fabric/common/flogging"
-	floggingmetrics "github.com/hyperledger/fabric/common/flogging/metrics"
 	"github.com/hyperledger/fabric/common/grpclogging"
 	"github.com/hyperledger/fabric/common/grpcmetrics"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
-	"github.com/hyperledger/fabric/common/metrics"
-	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/operations"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/internal/pkg/identity"
@@ -193,6 +193,7 @@ func Main() {
 	defer adminServer.Stop()
 
 	mutualTLS := serverConfig.SecOpts.UseTLS && serverConfig.SecOpts.RequireClientCert
+
 	server := NewServer(
 		manager,
 		metricsProvider,
@@ -220,7 +221,16 @@ func Main() {
 	if conf.General.Profile.Enabled {
 		go initializeProfilingService(conf)
 	}
-	ab.RegisterAtomicBroadcastServer(grpcServer.Server(), server)
+
+	clientRateLimiter, orgRateLimiter := CreateThrottlers(conf.General.Throttling)
+	throttlingWrapper := &ThrottlingAtomicBroadcast{
+		ThrottlingEnabled:     conf.General.Throttling.Rate > 0,
+		PerOrgRateLimiter:     orgRateLimiter,
+		PerClientRateLimiter:  clientRateLimiter,
+		AtomicBroadcastServer: server,
+	}
+
+	ab.RegisterAtomicBroadcastServer(grpcServer.Server(), throttlingWrapper)
 	logger.Info("Beginning to serve requests")
 	if err := grpcServer.Start(); err != nil {
 		logger.Fatalf("Atomic Broadcast gRPC server has terminated while serving requests due to: %v", err)
@@ -477,19 +487,19 @@ func initializeServerConfig(conf *localconfig.TopLevel, metricsProvider metrics.
 		// load crypto material from files
 		serverCertificate, err := os.ReadFile(conf.General.TLS.Certificate)
 		if err != nil {
-			logger.Fatalf("Failed to load server Certificate file '%s' (%s)",
+			logger.Fatalf("Failed to load server TLS Certificate file '%s' (%s)",
 				conf.General.TLS.Certificate, err)
 		}
 		serverKey, err := os.ReadFile(conf.General.TLS.PrivateKey)
 		if err != nil {
-			logger.Fatalf("Failed to load PrivateKey file '%s' (%s)",
+			logger.Fatalf("Failed to load TLS PrivateKey file '%s' (%s)",
 				conf.General.TLS.PrivateKey, err)
 		}
 		var serverRootCAs, clientRootCAs [][]byte
 		for _, serverRoot := range conf.General.TLS.RootCAs {
 			root, err := os.ReadFile(serverRoot)
 			if err != nil {
-				logger.Fatalf("Failed to load ServerRootCAs file '%s' (%s)",
+				logger.Fatalf("Failed to load TLS ServerRootCAs file '%s' (%s)",
 					err, serverRoot)
 			}
 			serverRootCAs = append(serverRootCAs, root)
@@ -498,7 +508,7 @@ func initializeServerConfig(conf *localconfig.TopLevel, metricsProvider metrics.
 			for _, clientRoot := range conf.General.TLS.ClientRootCAs {
 				root, err := os.ReadFile(clientRoot)
 				if err != nil {
-					logger.Fatalf("Failed to load ClientRootCAs file '%s' (%s)",
+					logger.Fatalf("Failed to load TLS ClientRootCAs file '%s' (%s)",
 						err, clientRoot)
 				}
 				clientRootCAs = append(clientRootCAs, root)

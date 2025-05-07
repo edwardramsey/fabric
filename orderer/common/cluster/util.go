@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -18,22 +19,19 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/protobuf/ptypes/timestamp"
-
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-config/protolator"
-	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/orderer"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/configtx"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/deliverclient"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
@@ -42,6 +40,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ConnByCertMap maps certificates represented as strings
@@ -207,47 +207,6 @@ type BlockSequenceVerifier func(blocks []*common.Block, channel string) error
 // Dialer creates a gRPC connection to a remote address
 type Dialer interface {
 	Dial(endpointCriteria EndpointCriteria) (*grpc.ClientConn, error)
-}
-
-var errNotAConfig = errors.New("not a config block")
-
-// ConfigFromBlock returns a ConfigEnvelope if exists, or a *NotAConfigBlock error.
-// It may also return some other error in case parsing failed.
-func ConfigFromBlock(block *common.Block) (*common.ConfigEnvelope, error) {
-	if block == nil || block.Data == nil || len(block.Data.Data) == 0 {
-		return nil, errors.New("empty block")
-	}
-	txn := block.Data.Data[0]
-	env, err := protoutil.GetEnvelopeFromBlock(txn)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	payload, err := protoutil.UnmarshalPayload(env.Payload)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if block.Header.Number == 0 {
-		configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
-		if err != nil {
-			return nil, errors.Wrap(err, "invalid config envelope")
-		}
-		return configEnvelope, nil
-	}
-	if payload.Header == nil {
-		return nil, errors.New("nil header in payload")
-	}
-	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if common.HeaderType(chdr.Type) != common.HeaderType_CONFIG {
-		return nil, errNotAConfig
-	}
-	configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
-	if err != nil {
-		return nil, errors.Wrap(err, "invalid config envelope")
-	}
-	return configEnvelope, nil
 }
 
 // VerifyBlockHash verifies the hash chain of the block with the given index
@@ -491,7 +450,7 @@ type ChainPuller interface {
 	PullBlock(seq uint64) *common.Block
 
 	// HeightsByEndpoints returns the block heights by endpoints of orderers
-	HeightsByEndpoints() (map[string]uint64, error)
+	HeightsByEndpoints() (map[string]uint64, string, error)
 
 	// Close closes the ChainPuller
 	Close()
@@ -692,7 +651,9 @@ func (cm *ComparisonMemoizer) shrink() {
 func (cm *ComparisonMemoizer) setup() {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
-	cm.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	var seed [32]byte
+	_, _ = crand.Read(seed[:])
+	cm.rand = rand.New(rand.NewChaCha8(seed))
 	cm.cache = make(map[arguments]bool)
 }
 
@@ -792,9 +753,9 @@ func verifyBlockSequence(blockBuff []*common.Block, signatureVerifier protoutil.
 		if err := VerifyBlockHash(i, blockBuff); err != nil {
 			return err
 		}
-		configFromBlock, err := ConfigFromBlock(block)
+		configFromBlock, err := deliverclient.ConfigFromBlock(block)
 
-		if err != nil && err != errNotAConfig {
+		if err != nil && err != deliverclient.ErrNotAConfig {
 			return err
 		}
 
@@ -844,7 +805,7 @@ func PullLastConfigBlock(puller ChainPuller) (*common.Block, error) {
 func LatestHeightAndEndpoint(puller ChainPuller) (string, uint64, error) {
 	var maxHeight uint64
 	var mostUpToDateEndpoint string
-	heightsByEndpoints, err := puller.HeightsByEndpoints()
+	heightsByEndpoints, _, err := puller.HeightsByEndpoints()
 	if err != nil {
 		return "", 0, err
 	}
@@ -857,7 +818,7 @@ func LatestHeightAndEndpoint(puller ChainPuller) (string, uint64, error) {
 	return mostUpToDateEndpoint, maxHeight, nil
 }
 
-func EncodeTimestamp(t *timestamp.Timestamp) []byte {
+func EncodeTimestamp(t *timestamppb.Timestamp) []byte {
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, uint64(t.Seconds))
 	return b

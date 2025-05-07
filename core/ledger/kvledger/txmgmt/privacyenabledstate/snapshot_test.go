@@ -16,12 +16,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/ledger/snapshot"
 	"github.com/hyperledger/fabric/core/ledger/internal/version"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate/mock"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/protoadapt"
 )
 
 var testNewHashFunc = func() (hash.Hash, error) {
@@ -48,9 +50,9 @@ func testSnapshot(t *testing.T, env TestEnv) {
 						Key:       fmt.Sprintf("key-%d", i),
 					},
 					VersionedValue: &statedb.VersionedValue{
-						Value:    []byte(fmt.Sprintf("value-for-key-%d-for-%s", i, ns)),
+						Value:    fmt.Appendf(nil, "value-for-key-%d-for-%s", i, ns),
 						Version:  version.NewHeight(1, 1),
-						Metadata: []byte(fmt.Sprintf("metadata-for-key-%d-for-%s", i, ns)),
+						Metadata: fmt.Appendf(nil, "metadata-for-key-%d-for-%s", i, ns),
 					},
 				}
 				sampleData = append(sampleData, sampleKV)
@@ -558,18 +560,24 @@ func TestSnapshotImportErrorPropagation(t *testing.T) {
 			require.NoError(t, os.Remove(dataFile))
 
 			fileContent := []byte{snapshotFileFormat}
-			buf := proto.NewBuffer(nil)
-			require.NoError(t,
-				buf.EncodeMessage(
-					&SnapshotRecord{
-						Version: []byte("bad-version-bytes"),
-					},
-				),
-			)
-			fileContent = append(fileContent, buf.Bytes()...)
+			sr := &SnapshotRecord{
+				Version: []byte("bad-version-bytes"),
+			}
+			srTmp := protoadapt.MessageV2Of(sr)
+			var buf []byte
+			buf = protowire.AppendVarint(buf, uint64(proto.Size(sr)))
+			nbuf, err := proto.MarshalOptions{
+				Deterministic: false,
+				AllowPartial:  true,
+			}.MarshalAppend(buf, srTmp)
+			require.NoError(t, err)
+			if len(buf) == len(nbuf) {
+				require.True(t, srTmp.ProtoReflect().IsValid())
+			}
+			fileContent = append(fileContent, nbuf...)
 			require.NoError(t, os.WriteFile(dataFile, fileContent, 0o600))
 
-			err := dbEnv.GetProvider().ImportFromSnapshot(
+			err = dbEnv.GetProvider().ImportFromSnapshot(
 				generateLedgerID(t), version.NewHeight(10, 10), snapshotDir)
 
 			require.Contains(t, err.Error(), "error while decoding version")
@@ -612,9 +620,9 @@ func TestSnapshotImportErrorPropagation(t *testing.T) {
 			require.NoError(t, os.Remove(metadataFile))
 
 			fileContentWithMissingCCName := []byte{snapshotFileFormat}
-			buf := proto.NewBuffer(nil)
-			require.NoError(t, buf.EncodeVarint(5))
-			fileContentWithMissingCCName = append(fileContentWithMissingCCName, buf.Bytes()...)
+			var buf []byte
+			buf = protowire.AppendVarint(buf, 5)
+			fileContentWithMissingCCName = append(fileContentWithMissingCCName, buf...)
 			require.NoError(t, os.WriteFile(metadataFile, fileContentWithMissingCCName, 0o600))
 
 			err := dbEnv.GetProvider().ImportFromSnapshot(
@@ -630,10 +638,10 @@ func TestSnapshotImportErrorPropagation(t *testing.T) {
 			require.NoError(t, os.Remove(metadataFile))
 
 			fileContentWithMissingCCName := []byte{snapshotFileFormat}
-			buf := proto.NewBuffer(nil)
-			require.NoError(t, buf.EncodeVarint(1))
-			require.NoError(t, buf.EncodeRawBytes([]byte("my-chaincode")))
-			fileContentWithMissingCCName = append(fileContentWithMissingCCName, buf.Bytes()...)
+			var buf []byte
+			buf = protowire.AppendVarint(buf, 1)
+			buf = protowire.AppendBytes(buf, []byte("my-chaincode"))
+			fileContentWithMissingCCName = append(fileContentWithMissingCCName, buf...)
 			require.NoError(t, os.WriteFile(metadataFile, fileContentWithMissingCCName, 0o600))
 
 			err := dbEnv.GetProvider().ImportFromSnapshot(

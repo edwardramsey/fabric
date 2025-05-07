@@ -14,16 +14,16 @@ import (
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/policies"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/msp"
-	protosorderer "github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
+	protosorderer "github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric/integration/nwo/commands"
 	"github.com/hyperledger/fabric/internal/configtxlator/update"
 	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
+	"google.golang.org/protobuf/proto"
 )
 
 // GetConfigBlock retrieves the current config block for a channel.
@@ -83,7 +83,7 @@ func GetConfig(n *Network, peer *Peer, orderer *Orderer, channel string) *common
 
 // UpdateConfig computes, signs, and submits a configuration update and waits
 // for the update to complete.
-func UpdateConfig(n *Network, orderer *Orderer, channel string, current, updated *common.Config, getConfigBlockFromOrderer bool, submitter *Peer, additionalSigners ...*Peer) {
+func UpdateConfig(n *Network, orderer *Orderer, channel string, current, updated *common.Config, getConfigBlockFromOrderer bool, submitter *Peer, ordererSigners []*Orderer, additionalSigners ...*Peer) {
 	tempDir, err := os.MkdirTemp("", "updateConfig")
 	Expect(err).NotTo(HaveOccurred())
 	defer os.RemoveAll(tempDir)
@@ -110,6 +110,15 @@ func UpdateConfig(n *Network, orderer *Orderer, channel string, current, updated
 
 	for _, signer := range additionalSigners {
 		sess, err := n.PeerAdminSession(signer, commands.SignConfigTx{
+			File:       updateFile,
+			ClientAuth: n.ClientAuthRequired,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
+	}
+
+	for _, signer := range ordererSigners {
+		sess, err := n.OrdererAdminSession(signer, submitter, commands.SignConfigTx{
 			File:       updateFile,
 			ClientAuth: n.ClientAuthRequired,
 		})
@@ -285,7 +294,7 @@ func UnmarshalBlockFromFile(blockFile string) *common.Block {
 type ConsensusMetadataMutator func([]byte) []byte
 
 // MSPMutator receives FabricMSPConfig and mutates it.
-type MSPMutator func(config msp.FabricMSPConfig) msp.FabricMSPConfig
+type MSPMutator func(config *msp.FabricMSPConfig) *msp.FabricMSPConfig
 
 // UpdateConsensusMetadata executes a config update that updates the consensus
 // metadata according to the given ConsensusMetadataMutator.
@@ -323,7 +332,7 @@ func UpdateOrdererMSP(network *Network, peer *Peer, orderer *Orderer, channel, o
 	Expect(err).NotTo(HaveOccurred())
 
 	// Mutate it as we are asked
-	*fabricConfig = mutateMSP(*fabricConfig)
+	fabricConfig = mutateMSP(fabricConfig)
 
 	// Wrap it back into the config
 	mspConfig.Config = protoutil.MarshalOrPanic(fabricConfig)

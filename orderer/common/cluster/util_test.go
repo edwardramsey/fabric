@@ -9,29 +9,31 @@ package cluster_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/msp"
-	"github.com/hyperledger/fabric-protos-go/orderer"
-	"github.com/hyperledger/fabric/bccsp"
-	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/bccsp/sw"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-lib-go/common/metrics/disabled"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
+	"github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
-	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
@@ -40,7 +42,9 @@ import (
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
 	"github.com/hyperledger/fabric/protoutil"
+	"github.com/onsi/gomega/gexec"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 //go:generate counterfeiter -o mocks/policy.go --fake-name Policy . policy
@@ -337,8 +341,8 @@ func createBlockChain(start, end uint64) []*common.Block {
 	return blockchain
 }
 
-func injectGlobalOrdererEndpoint(t *testing.T, block *common.Block, endpoint string) {
-	ordererAddresses := channelconfig.OrdererAddressesValue([]string{endpoint})
+func injectGlobalOrdererEndpoint(t *testing.T, block *common.Block, globalEndpoint, orgEndpoint string) {
+	ordererAddresses := channelconfig.OrdererAddressesValue([]string{globalEndpoint})
 	// Unwrap the layers until we reach the orderer addresses
 	env, err := protoutil.ExtractEnvelope(block, 0)
 	require.NoError(t, err)
@@ -351,13 +355,21 @@ func injectGlobalOrdererEndpoint(t *testing.T, block *common.Block, endpoint str
 		Value:     protoutil.MarshalOrPanic(ordererAddresses.Value()),
 		ModPolicy: "/Channel/Orderer/Admins",
 	}
-	// Remove the per org addresses, if applicable
+	// Update the per org addresses
 	ordererGrps := confEnv.Config.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Groups
 	for _, grp := range ordererGrps {
 		if grp.Values[channelconfig.EndpointsKey] == nil {
 			continue
 		}
-		grp.Values[channelconfig.EndpointsKey].Value = nil
+		if orgEndpoint == "" {
+			grp.Values[channelconfig.EndpointsKey].Value = nil
+			continue
+		}
+		// Inject the orgEndpoint
+		ordererOrgProtos := &common.OrdererAddresses{
+			Addresses: []string{orgEndpoint},
+		}
+		grp.Values[channelconfig.EndpointsKey].Value = protoutil.MarshalOrPanic(ordererOrgProtos)
 	}
 	// And put it back into the block
 	payload.Data = protoutil.MarshalOrPanic(confEnv)
@@ -365,8 +377,29 @@ func injectGlobalOrdererEndpoint(t *testing.T, block *common.Block, endpoint str
 	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
 }
 
+func setChannelCapability(t *testing.T, block *common.Block, capabiliity string) {
+	env, err := protoutil.ExtractEnvelope(block, 0)
+	require.NoError(t, err)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
+	require.NoError(t, err)
+	confEnv, err := configtx.UnmarshalConfigEnvelope(payload.Data)
+	require.NoError(t, err)
+
+	// Replace the orderer addresses
+	topCapabilities := make(map[string]bool)
+	topCapabilities[capabiliity] = true
+	confEnv.Config.ChannelGroup.Values[channelconfig.CapabilitiesKey] = &common.ConfigValue{
+		Value:     protoutil.MarshalOrPanic(channelconfig.CapabilitiesValue(topCapabilities).Value()),
+		ModPolicy: channelconfig.AdminsPolicyKey,
+	}
+
+	payload.Data = protoutil.MarshalOrPanic(confEnv)
+	env.Payload = protoutil.MarshalOrPanic(payload)
+	block.Data.Data[0] = protoutil.MarshalOrPanic(env)
+}
+
 func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
-	t.Run("global endpoints", func(t *testing.T) {
+	t.Run("global endpoints V2", func(t *testing.T) {
 		block, err := test.MakeGenesisBlock("mychannel")
 		require.NoError(t, err)
 
@@ -374,7 +407,8 @@ func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
 		require.NoError(t, err)
 		// For a block that doesn't have per org endpoints,
 		// we take the global endpoints
-		injectGlobalOrdererEndpoint(t, block, "globalEndpoint")
+		injectGlobalOrdererEndpoint(t, block, "globalEndpoint", "")
+		setChannelCapability(t, block, capabilities.ChannelV2_0)
 		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block, cryptoProvider)
 		require.NoError(t, err)
 		require.Len(t, endpointConfig, 1)
@@ -385,6 +419,41 @@ func TestEndpointconfigFromConfigBlockGreenPath(t *testing.T) {
 		require.NoError(t, err)
 
 		require.True(t, cert.IsCA)
+	})
+
+	t.Run("global endpoints and org endpoints V2", func(t *testing.T) {
+		block, err := test.MakeGenesisBlock("mychannel")
+		require.NoError(t, err)
+
+		cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+		require.NoError(t, err)
+		// For a block that has both global and per org endpoints,
+		// we take the per org endpoints
+		injectGlobalOrdererEndpoint(t, block, "globalEndpoint", "orgEndpoint")
+		setChannelCapability(t, block, capabilities.ChannelV2_0)
+		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block, cryptoProvider)
+		require.NoError(t, err)
+		require.Len(t, endpointConfig, 1)
+		require.Equal(t, "orgEndpoint", endpointConfig[0].Endpoint)
+
+		bl, _ := pem.Decode(endpointConfig[0].TLSRootCAs[0])
+		cert, err := x509.ParseCertificate(bl.Bytes)
+		require.NoError(t, err)
+
+		require.True(t, cert.IsCA)
+	})
+
+	t.Run("global endpoints V3", func(t *testing.T) {
+		block, err := test.MakeGenesisBlock("mychannel")
+		require.NoError(t, err)
+
+		cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+		require.NoError(t, err)
+		// In V3, we do not allow global endpoints
+		injectGlobalOrdererEndpoint(t, block, "globalEndpoint", "orgEndpoint")
+		endpointConfig, err := cluster.EndpointconfigFromConfigBlock(block, cryptoProvider)
+		require.EqualError(t, err, "failed extracting bundle from envelope: initializing channelconfig failed: global OrdererAddresses are not allowed with V3_0 capability, use org specific addresses only")
+		require.Nil(t, endpointConfig)
 	})
 
 	t.Run("per org endpoints", func(t *testing.T) {
@@ -469,98 +538,31 @@ func TestEndpointconfigFromConfigBlockFailures(t *testing.T) {
 	})
 }
 
-func TestConfigFromBlockBadInput(t *testing.T) {
-	for _, testCase := range []struct {
-		name          string
-		block         *common.Block
-		expectedError string
-	}{
-		{
-			name:          "nil block",
-			expectedError: "empty block",
-			block:         nil,
-		},
-		{
-			name:          "nil block data",
-			expectedError: "empty block",
-			block:         &common.Block{},
-		},
-		{
-			name:          "no data in block",
-			expectedError: "empty block",
-			block:         &common.Block{Data: &common.BlockData{}},
-		},
-		{
-			name:          "invalid payload",
-			expectedError: "error unmarshalling Envelope",
-			block:         &common.Block{Data: &common.BlockData{Data: [][]byte{{1, 2, 3}}}},
-		},
-		{
-			name:          "bad genesis block",
-			expectedError: "invalid config envelope",
-			block: &common.Block{
-				Header: &common.BlockHeader{}, Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
-					Payload: protoutil.MarshalOrPanic(&common.Payload{
-						Data: []byte{1, 2, 3},
-					}),
-				})}},
-			},
-		},
-		{
-			name:          "invalid envelope in block",
-			expectedError: "error unmarshalling Envelope",
-			block:         &common.Block{Data: &common.BlockData{Data: [][]byte{{1, 2, 3}}}},
-		},
-		{
-			name:          "invalid payload in block envelope",
-			expectedError: "error unmarshalling Payload",
-			block: &common.Block{Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
-				Payload: []byte{1, 2, 3},
-			})}}},
-		},
-		{
-			name:          "invalid channel header",
-			expectedError: "error unmarshalling ChannelHeader",
-			block: &common.Block{
-				Header: &common.BlockHeader{Number: 1},
-				Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
-					Payload: protoutil.MarshalOrPanic(&common.Payload{
-						Header: &common.Header{
-							ChannelHeader: []byte{1, 2, 3},
-						},
-					}),
-				})}},
-			},
-		},
-		{
-			name:          "invalid config block",
-			expectedError: "invalid config envelope",
-			block: &common.Block{
-				Header: &common.BlockHeader{},
-				Data: &common.BlockData{Data: [][]byte{protoutil.MarshalOrPanic(&common.Envelope{
-					Payload: protoutil.MarshalOrPanic(&common.Payload{
-						Data: []byte{1, 2, 3},
-						Header: &common.Header{
-							ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
-								Type: int32(common.HeaderType_CONFIG),
-							}),
-						},
-					}),
-				})}},
-			},
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			conf, err := cluster.ConfigFromBlock(testCase.block)
-			require.Nil(t, conf)
-			require.Error(t, err)
-			require.Contains(t, err.Error(), testCase.expectedError)
-		})
-	}
-}
-
 func TestBlockValidationPolicyVerifier(t *testing.T) {
+	dir := t.TempDir()
+
+	cryptogen, err := gexec.Build("github.com/hyperledger/fabric/cmd/cryptogen")
+	require.NoError(t, err)
+	defer os.Remove(cryptogen)
+
+	cryptoConfigDir := filepath.Join(dir, "crypto-config")
+	b, err := exec.Command(cryptogen, "generate", fmt.Sprintf("--output=%s", cryptoConfigDir)).CombinedOutput()
+	require.NoError(t, err, string(b))
+
 	config := genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile, configtest.GetDevConfigDir())
+	config.Orderer.Organizations = append(config.Orderer.Organizations, &genesisconfig.Organization{
+		MSPDir:           filepath.Join(cryptoConfigDir, "ordererOrganizations", "example.com", "msp"),
+		OrdererEndpoints: []string{"foo:7050", "bar:8050"},
+		MSPType:          "bccsp",
+		ID:               "SampleMSP",
+		Name:             "SampleOrg",
+		Policies: map[string]*genesisconfig.Policy{
+			"Admins":  {Type: "ImplicitMeta", Rule: "ANY Admins"},
+			"Readers": {Type: "ImplicitMeta", Rule: "ANY Readers"},
+			"Writers": {Type: "ImplicitMeta", Rule: "ANY Writers"},
+		},
+	})
+
 	group, err := encoder.NewChannelGroup(config)
 	require.NoError(t, err)
 	require.NotNil(t, group)
@@ -847,114 +849,62 @@ func TestBlockVerifierBuilderNoConfigBlock(t *testing.T) {
 	require.ErrorContains(t, verifier(nil, md), "initialized with an invalid config block: channelconfig Config cannot be nil")
 }
 
-func TestBlockVerifierFunc(t *testing.T) {
-	block := sampleConfigBlock()
-	bvfunc := cluster.BlockVerifierBuilder(&mocks.BCCSP{})
+func generateCertificatesSmartBFT(confAppSmartBFT *genesisconfig.Profile, certDir string, certs ...string) error {
+	for i, c := range confAppSmartBFT.Orderer.ConsenterMapping {
+		c.MSPID = "SampleOrg"
+		cert := filepath.Join(certDir, certs[i])
+		c.Identity = cert
+		c.ServerTLSCert = cert
+		c.ClientTLSCert = cert
+	}
 
-	verifier := bvfunc(block)
+	return nil
+}
+
+func TestBlockVerifierFunc(t *testing.T) {
+	certPath := filepath.Join("testdata", "blockverification", "msp", "signcerts")
+
+	conf := genesisconfig.Load(genesisconfig.SampleAppChannelSmartBftProfile, filepath.Join("testdata", "blockverification"))
+	err := generateCertificatesSmartBFT(conf, certPath, "peer.pem", "orderer.example.com-cert.pem", "peer0.org1.example.com-cert.pem", "peer0.org2.example.com-cert.pem")
+	require.NoError(t, err)
+
+	flogging.ActivateSpec("debug")
+
+	gb := encoder.New(conf).GenesisBlockForChannel("foo")
+
+	bc := &mocks.BCCSP{}
+	bc.VerifyReturns(true, nil)
+	bc.GetHashReturns(sha256.New(), nil)
+	bc.HashStub = func(msg []byte, _ bccsp.HashOpts) ([]byte, error) {
+		dig := sha256.Sum256(msg)
+		return dig[:], nil
+	}
+	bvfunc := cluster.BlockVerifierBuilder(bc)
+
+	verifier := bvfunc(gb)
 
 	header := &common.BlockHeader{}
 	md := &common.BlockMetadata{
 		Metadata: [][]byte{
 			protoutil.MarshalOrPanic(&common.Metadata{Signatures: []*common.MetadataSignature{
 				{
-					Signature:        []byte{},
+					Signature:        []byte{1},
 					IdentifierHeader: protoutil.MarshalOrPanic(&common.IdentifierHeader{Identifier: 1}),
+				},
+				{
+					Signature:        []byte{2},
+					IdentifierHeader: protoutil.MarshalOrPanic(&common.IdentifierHeader{Identifier: 2}),
+				},
+				{
+					Signature:        []byte{3},
+					IdentifierHeader: protoutil.MarshalOrPanic(&common.IdentifierHeader{Identifier: 3}),
 				},
 			}}),
 		},
 	}
 
-	err := verifier(header, md)
+	err = verifier(header, md)
 	require.NoError(t, err)
-}
-
-func sampleConfigBlock() *common.Block {
-	return &common.Block{
-		Header: &common.BlockHeader{
-			PreviousHash: []byte("foo"),
-		},
-		Data: &common.BlockData{
-			Data: [][]byte{
-				protoutil.MarshalOrPanic(&common.Envelope{
-					Payload: protoutil.MarshalOrPanic(&common.Payload{
-						Header: &common.Header{
-							ChannelHeader: protoutil.MarshalOrPanic(&common.ChannelHeader{
-								Type:      int32(common.HeaderType_CONFIG),
-								ChannelId: "mychannel",
-							}),
-						},
-						Data: protoutil.MarshalOrPanic(&common.ConfigEnvelope{
-							Config: &common.Config{
-								ChannelGroup: &common.ConfigGroup{
-									Values: map[string]*common.ConfigValue{
-										"Capabilities": {
-											Value: protoutil.MarshalOrPanic(&common.Capabilities{
-												Capabilities: map[string]*common.Capability{"V3_0": {}},
-											}),
-										},
-										"HashingAlgorithm": {
-											Value: protoutil.MarshalOrPanic(&common.HashingAlgorithm{Name: "SHA256"}),
-										},
-										"BlockDataHashingStructure": {
-											Value: protoutil.MarshalOrPanic(&common.BlockDataHashingStructure{Width: math.MaxUint32}),
-										},
-									},
-									Groups: map[string]*common.ConfigGroup{
-										"Orderer": {
-											Policies: map[string]*common.ConfigPolicy{
-												"BlockValidation": {
-													Policy: &common.Policy{
-														Type: 3,
-													},
-												},
-											},
-											Values: map[string]*common.ConfigValue{
-												"BatchSize": {
-													Value: protoutil.MarshalOrPanic(&orderer.BatchSize{
-														MaxMessageCount:   500,
-														AbsoluteMaxBytes:  10485760,
-														PreferredMaxBytes: 2097152,
-													}),
-												},
-												"BatchTimeout": {
-													Value: protoutil.MarshalOrPanic(&orderer.BatchTimeout{
-														Timeout: "2s",
-													}),
-												},
-												"Capabilities": {
-													Value: protoutil.MarshalOrPanic(&common.Capabilities{
-														Capabilities: map[string]*common.Capability{"V3_0": {}},
-													}),
-												},
-												"ConsensusType": {
-													Value: protoutil.MarshalOrPanic(&common.BlockData{Data: [][]byte{[]byte("BFT")}}),
-												},
-												"Orderers": {
-													Value: protoutil.MarshalOrPanic(&common.Orderers{
-														ConsenterMapping: []*common.Consenter{
-															{
-																Id:       1,
-																Host:     "host1",
-																Port:     8001,
-																MspId:    "msp1",
-																Identity: []byte("identity1"),
-															},
-														},
-													}),
-												},
-											},
-										},
-									},
-								},
-							},
-						}),
-					}),
-					Signature: []byte("bar"),
-				}),
-			},
-		},
-	}
 }
 
 func TestGetTLSSessionBinding(t *testing.T) {
@@ -1130,7 +1080,7 @@ func TestChainParticipant(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			puller := &mocks.ChainPuller{}
-			puller.On("HeightsByEndpoints").Return(testCase.heightsByEndpoints, testCase.heightsByEndpointsErr)
+			puller.On("HeightsByEndpoints").Return(testCase.heightsByEndpoints, "", testCase.heightsByEndpointsErr)
 			puller.On("PullBlock", testCase.latestBlockSeq).Return(testCase.latestBlock)
 			puller.On("PullBlock", testCase.latestConfigBlockSeq).Return(testCase.latestConfigBlock)
 			puller.On("Close")

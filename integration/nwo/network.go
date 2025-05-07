@@ -8,7 +8,6 @@ package nwo
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -26,9 +25,8 @@ import (
 	"time"
 
 	docker "github.com/fsouza/go-dockerclient"
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
-	pb "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	pb "github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric/integration/nwo/commands"
 	"github.com/hyperledger/fabric/integration/nwo/fabricconfig"
 	"github.com/hyperledger/fabric/integration/nwo/runner"
@@ -44,7 +42,8 @@ import (
 	"github.com/tedsuo/ifrit/grouper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"gopkg.in/yaml.v2"
+	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 // Blocks defines block cutting config.
@@ -146,19 +145,23 @@ type Profile struct {
 
 // Network holds information about a fabric network.
 type Network struct {
-	RootDir               string
-	StartPort             uint16
-	Components            *Components
-	DockerClient          *docker.Client
-	ExternalBuilders      []fabricconfig.ExternalBuilder
-	NetworkID             string
-	EventuallyTimeout     time.Duration
-	SessionCreateInterval time.Duration
-	MetricsProvider       string
-	StatsdEndpoint        string
-	ClientAuthRequired    bool
-	TLSEnabled            bool
-	GatewayEnabled        bool
+	RootDir                  string
+	StartPort                uint16
+	Components               *Components
+	DockerClient             *docker.Client
+	ExternalBuilders         []fabricconfig.ExternalBuilder
+	NetworkID                string
+	EventuallyTimeout        time.Duration
+	SessionCreateInterval    time.Duration
+	MetricsProvider          string
+	StatsdEndpoint           string
+	ClientAuthRequired       bool
+	TLSEnabled               bool
+	GatewayEnabled           bool
+	OrdererReplicationPolicy string
+	PeerDeliveryClientPolicy string
+	UseWriteBatch            bool
+	UseGetMultipleKeys       bool
 
 	PortsByOrdererID map[string]Ports
 	PortsByPeerID    map[string]Ports
@@ -185,11 +188,14 @@ func New(c *Config, rootDir string, dockerClient *docker.Client, startPort int, 
 		Components:   components,
 		DockerClient: dockerClient,
 
-		NetworkID:         runner.UniqueName(),
-		EventuallyTimeout: time.Minute,
-		MetricsProvider:   "prometheus",
-		PortsByOrdererID:  map[string]Ports{},
-		PortsByPeerID:     map[string]Ports{},
+		NetworkID:                runner.UniqueName(),
+		EventuallyTimeout:        time.Minute,
+		MetricsProvider:          "prometheus",
+		PortsByOrdererID:         map[string]Ports{},
+		PortsByPeerID:            map[string]Ports{},
+		PeerDeliveryClientPolicy: "",
+		UseWriteBatch:            true,
+		UseGetMultipleKeys:       true,
 
 		Organizations:  c.Organizations,
 		Consensus:      c.Consensus,
@@ -1000,46 +1006,6 @@ func (n *Network) CreateAndJoinChannel(o *Orderer, channelName string) {
 	n.JoinChannel(channelName, o, peers...)
 }
 
-// UpdateChannelAnchors determines the anchor peers for the specified channel,
-// creates an anchor peer update transaction for each organization, and submits
-// the update transactions to the orderer.
-//
-// TODO using configtxgen with -outputAnchorPeersUpdate to update the anchor peers is deprecated and does not work
-// with channel participation API. We'll have to generate the channel update explicitly (see UpdateOrgAnchorPeers).
-func (n *Network) UpdateChannelAnchors(o *Orderer, channelName string) {
-	tempFile, err := os.CreateTemp("", "update-anchors")
-	Expect(err).NotTo(HaveOccurred())
-	tempFile.Close()
-	defer os.Remove(tempFile.Name())
-
-	peersByOrg := map[string]*Peer{}
-	for _, p := range n.AnchorsForChannel(channelName) {
-		peersByOrg[p.Organization] = p
-	}
-
-	for orgName, p := range peersByOrg {
-		anchorUpdate := commands.OutputAnchorPeersUpdate{
-			OutputAnchorPeersUpdate: tempFile.Name(),
-			ChannelID:               channelName,
-			Profile:                 n.ProfileForChannel(channelName),
-			ConfigPath:              n.RootDir,
-			AsOrg:                   orgName,
-		}
-		sess, err := n.ConfigTxGen(anchorUpdate)
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
-
-		sess, err = n.PeerAdminSession(p, commands.ChannelUpdate{
-			ChannelID:  channelName,
-			Orderer:    n.OrdererAddress(o, ListenPort),
-			File:       tempFile.Name(),
-			ClientAuth: n.ClientAuthRequired,
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
-	}
-}
-
 // UpdateOrgAnchorPeers sets the anchor peers of an organization on a channel using a config update tx, and waits for
 // the update to be complete.
 func (n *Network) UpdateOrgAnchorPeers(o *Orderer, channelName, orgName string, anchorPeersForOrg []*Peer) {
@@ -1065,7 +1031,7 @@ func (n *Network) UpdateOrgAnchorPeers(o *Orderer, channelName, orgName string, 
 		ModPolicy: "Admins",
 	}
 
-	UpdateConfig(n, o, channelName, currentConfig, updatedConfig, false, peersInOrg[0], peersInOrg[0])
+	UpdateConfig(n, o, channelName, currentConfig, updatedConfig, false, peersInOrg[0], nil, peersInOrg[0])
 }
 
 // VerifyMembership checks that each peer has discovered the expected peers in
@@ -1264,6 +1230,7 @@ func (n *Network) OrdererRunner(o *Orderer, env ...string) *ginkgomon.Runner {
 	cmd := exec.Command(n.Components.Orderer())
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, fmt.Sprintf("FABRIC_CFG_PATH=%s", n.OrdererDir(o)))
+	cmd.Env = append(cmd.Env, fabricLoggingSpec)
 	cmd.Env = append(cmd.Env, env...)
 
 	config := ginkgomon.Config{
@@ -1296,6 +1263,7 @@ func (n *Network) PeerRunner(p *Peer, env ...string) *ginkgomon.Runner {
 		"FABRIC_CFG_PATH="+n.PeerDir(p),
 		"CORE_LEDGER_STATE_COUCHDBCONFIG_USERNAME=admin",
 		"CORE_LEDGER_STATE_COUCHDBCONFIG_PASSWORD=adminpw",
+		fabricLoggingSpec,
 	)
 	cmd.Env = append(cmd.Env, env...)
 
@@ -1408,6 +1376,7 @@ func (n *Network) PeerUserSession(p *Peer, user string, command Command) (*gexec
 		n.PeerUserTLSDir(p, user),
 		fmt.Sprintf("FABRIC_CFG_PATH=%s", n.PeerDir(p)),
 		fmt.Sprintf("CORE_PEER_MSPCONFIGPATH=%s", n.PeerUserMSPDir(p, user)),
+		fabricLoggingSpec,
 	)
 	return n.StartSession(cmd, command.SessionName())
 }
@@ -1470,14 +1439,8 @@ func (n *Network) NewClientConn(address, caCertPath string, clientCertPath strin
 		creds = credentials.NewTLS(config)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		address,
-		grpc.WithBlock(),
-		grpc.FailOnNonTempDialError(true),
 		grpc.WithTransportCredentials(creds),
 	)
 	Expect(err).NotTo(HaveOccurred())
@@ -1496,6 +1459,7 @@ func (n *Network) IdemixUserSession(p *Peer, idemixOrg *Organization, user strin
 		fmt.Sprintf("CORE_PEER_MSPCONFIGPATH=%s", n.IdemixUserMSPDir(idemixOrg, user)),
 		fmt.Sprintf("CORE_PEER_LOCALMSPTYPE=%s", "idemix"),
 		fmt.Sprintf("CORE_PEER_LOCALMSPID=%s", idemixOrg.MSPID),
+		fabricLoggingSpec,
 	)
 	return n.StartSession(cmd, command.SessionName())
 }
@@ -1509,6 +1473,7 @@ func (n *Network) OrdererAdminSession(o *Orderer, p *Peer, command Command) (*ge
 		fmt.Sprintf("CORE_PEER_LOCALMSPID=%s", n.Organization(o.Organization).MSPID),
 		fmt.Sprintf("FABRIC_CFG_PATH=%s", n.PeerDir(p)),
 		fmt.Sprintf("CORE_PEER_MSPCONFIGPATH=%s", n.OrdererUserMSPDir(o, "Admin")),
+		fabricLoggingSpec,
 	)
 	return n.StartSession(cmd, command.SessionName())
 }
@@ -1709,6 +1674,12 @@ const (
 	OperationsPort PortName = "Operations"
 	ClusterPort    PortName = "Cluster"
 	AdminPort      PortName = "Admin"
+
+	// Default logging spec, may get overridden in specific tests
+	// For most components INFO logging is suitable
+	// When troubleshooting a specific test FABRIC_LOGGING_SPEC can be edited to suppress chatty components and debug other components
+	// e.g. "FABRIC_LOGGING_SPEC=info:grpc=warn:bccsp_p11=debug"
+	fabricLoggingSpec = "FABRIC_LOGGING_SPEC=info"
 )
 
 // PeerPortNames returns the list of ports that need to be reserved for a Peer.

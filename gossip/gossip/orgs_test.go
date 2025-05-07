@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	cb "github.com/hyperledger/fabric-protos-go/common"
-	proto "github.com/hyperledger/fabric-protos-go/gossip"
-	"github.com/hyperledger/fabric/bccsp/factory"
-	"github.com/hyperledger/fabric/common/metrics/disabled"
+	"github.com/hyperledger/fabric-lib-go/bccsp/factory"
+	"github.com/hyperledger/fabric-lib-go/common/metrics/disabled"
+	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
+	proto "github.com/hyperledger/fabric-protos-go-apiv2/gossip"
 	"github.com/hyperledger/fabric/gossip/api"
 	gcomm "github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -245,7 +245,7 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 			peersKnown := p.Peers()
 			peersToKnow := expectedMembershipSize[string(pkiID)]
 			if peersToKnow != len(peersKnown) {
-				t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+				t.Logf("peer %#v doesn't know the needed amount of peers, expected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
 				return false
 			}
 			for _, knownPeer := range peersKnown {

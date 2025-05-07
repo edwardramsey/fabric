@@ -8,23 +8,22 @@ package deliverservice
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"testing"
 	"time"
 
-	cb "github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric/bccsp"
-	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/bccsp/sw"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/deliverclient/blocksprovider"
 	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/core/deliverservice/fake"
 	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
 	"github.com/hyperledger/fabric/internal/configtxgen/genesisconfig"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
-	"github.com/hyperledger/fabric/internal/pkg/peer/blocksprovider"
 	"github.com/stretchr/testify/require"
 )
 
@@ -178,6 +177,7 @@ func TestStartDeliverForChannel_BFT(t *testing.T) {
 		ds := NewDeliverService(&Config{
 			DeliverServiceConfig: &DeliverServiceConfig{
 				SecOpts: secOpts,
+				Policy:  DefaultPolicy,
 			},
 			ChannelConfig:  channelConfigProto,
 			CryptoProvider: cryptoProvider,
@@ -203,9 +203,11 @@ func TestStartDeliverForChannel_BFT(t *testing.T) {
 
 	t.Run("Green Path without mutual TLS", func(t *testing.T) {
 		ds := NewDeliverService(&Config{
-			DeliverServiceConfig: &DeliverServiceConfig{},
-			ChannelConfig:        channelConfigProto,
-			CryptoProvider:       cryptoProvider,
+			DeliverServiceConfig: &DeliverServiceConfig{
+				Policy: DefaultPolicy,
+			},
+			ChannelConfig:  channelConfigProto,
+			CryptoProvider: cryptoProvider,
 		}).(*deliverServiceImpl)
 
 		finalized := make(chan struct{})
@@ -227,9 +229,11 @@ func TestStartDeliverForChannel_BFT(t *testing.T) {
 
 	t.Run("Can restart for channel: Start->Stop->Start", func(t *testing.T) {
 		ds := NewDeliverService(&Config{
-			DeliverServiceConfig: &DeliverServiceConfig{},
-			ChannelConfig:        channelConfigProto,
-			CryptoProvider:       cryptoProvider,
+			DeliverServiceConfig: &DeliverServiceConfig{
+				Policy: DefaultPolicy,
+			},
+			ChannelConfig:  channelConfigProto,
+			CryptoProvider: cryptoProvider,
 		}).(*deliverServiceImpl)
 
 		finalized := make(chan struct{})
@@ -268,9 +272,11 @@ func TestStartDeliverForChannel_BFT(t *testing.T) {
 		fakeLedgerInfo := fakeLedgerInfoCreator()
 
 		ds := NewDeliverService(&Config{
-			DeliverServiceConfig: &DeliverServiceConfig{},
-			ChannelConfig:        channelConfigProto,
-			CryptoProvider:       cryptoProvider,
+			DeliverServiceConfig: &DeliverServiceConfig{
+				Policy: DefaultPolicy,
+			},
+			ChannelConfig:  channelConfigProto,
+			CryptoProvider: cryptoProvider,
 		}).(*deliverServiceImpl)
 
 		err := ds.StartDeliverForChannel("channel-id", fakeLedgerInfo, func() {})
@@ -289,6 +295,21 @@ func TestStartDeliverForChannel_BFT(t *testing.T) {
 
 		err := ds.StartDeliverForChannel("channel-id", fakeLedgerInfoCreator(), func() {})
 		require.EqualError(t, err, "block deliverer for channel `channel-id` is stopping")
+	})
+
+	t.Run("Bad policy", func(t *testing.T) {
+		fakeLedgerInfo := fakeLedgerInfoCreator()
+
+		ds := NewDeliverService(&Config{
+			DeliverServiceConfig: &DeliverServiceConfig{
+				Policy: "bogus",
+			},
+			ChannelConfig:  channelConfigProto,
+			CryptoProvider: cryptoProvider,
+		}).(*deliverServiceImpl)
+
+		err := ds.StartDeliverForChannel("channel-id", fakeLedgerInfo, func() {})
+		require.EqualError(t, err, "unexpected delivey service policy: `bogus`")
 	})
 }
 
@@ -434,13 +455,13 @@ func generateCertificatesSmartBFT(t *testing.T, confAppSmartBFT *genesisconfig.P
 		srvC, err := tlsCA.NewServerCertKeyPair(c.Host)
 		require.NoError(t, err)
 		srvP := path.Join(certDir, fmt.Sprintf("server%d.crt", i))
-		err = ioutil.WriteFile(srvP, srvC.Cert, 0o644)
+		err = os.WriteFile(srvP, srvC.Cert, 0o644)
 		require.NoError(t, err)
 
 		clnC, err := tlsCA.NewClientCertKeyPair()
 		require.NoError(t, err)
 		clnP := path.Join(certDir, fmt.Sprintf("client%d.crt", i))
-		err = ioutil.WriteFile(clnP, clnC.Cert, 0o644)
+		err = os.WriteFile(clnP, clnC.Cert, 0o644)
 		require.NoError(t, err)
 
 		c.Identity = srvP

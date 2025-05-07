@@ -14,9 +14,8 @@ import (
 	"syscall"
 
 	docker "github.com/fsouza/go-dockerclient"
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
-	pb "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	pb "github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/integration/channelparticipation"
 	"github.com/hyperledger/fabric/integration/nwo"
@@ -28,6 +27,7 @@ import (
 	"github.com/onsi/gomega/gexec"
 	"github.com/tedsuo/ifrit"
 	ginkgomon "github.com/tedsuo/ifrit/ginkgomon_v2"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("EndToEndACL", func() {
@@ -148,6 +148,7 @@ var _ = Describe("EndToEndACL", func() {
 			ChannelConfigPolicy: chaincode.ChannelConfigPolicy,
 			InitRequired:        chaincode.InitRequired,
 			CollectionsConfig:   chaincode.CollectionsConfig,
+			WaitForEventTimeout: network.EventuallyTimeout,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit())
@@ -166,6 +167,7 @@ var _ = Describe("EndToEndACL", func() {
 			ChannelConfigPolicy: chaincode.ChannelConfigPolicy,
 			InitRequired:        chaincode.InitRequired,
 			CollectionsConfig:   chaincode.CollectionsConfig,
+			WaitForEventTimeout: network.EventuallyTimeout,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit())
@@ -192,6 +194,7 @@ var _ = Describe("EndToEndACL", func() {
 			InitRequired:        chaincode.InitRequired,
 			CollectionsConfig:   chaincode.CollectionsConfig,
 			PeerAddresses:       []string{network.PeerAddress(org1Peer0, nwo.ListenPort)},
+			WaitForEventTimeout: network.EventuallyTimeout,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit())
@@ -279,6 +282,7 @@ var _ = Describe("EndToEndACL", func() {
 			InitRequired:        chaincode.InitRequired,
 			CollectionsConfig:   chaincode.CollectionsConfig,
 			PeerAddresses:       peerAddresses,
+			WaitForEventTimeout: network.EventuallyTimeout,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit())
@@ -463,7 +467,7 @@ func SetACLPolicy(network *nwo.Network, channel, policyName, policy string, orde
 		}),
 	}
 
-	nwo.UpdateConfig(network, orderer, channel, config, updatedConfig, true, submitter, signer)
+	nwo.UpdateConfig(network, orderer, channel, config, updatedConfig, true, submitter, nil, signer)
 }
 
 // GetTxIDFromBlock gets a transaction id from a block that has been

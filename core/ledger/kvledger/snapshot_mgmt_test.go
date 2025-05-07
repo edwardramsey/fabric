@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger"
@@ -366,7 +366,7 @@ func testutilCommitBlocks(t *testing.T, l ledger.PeerLedger, bg *testutil.BlockG
 		txid := util.GenerateUUID()
 		simulator, err := l.NewTxSimulator(txid)
 		require.NoError(t, err)
-		require.NoError(t, simulator.SetState("ns1", fmt.Sprintf("key%d", i), []byte(fmt.Sprintf("value%d", i))))
+		require.NoError(t, simulator.SetState("ns1", fmt.Sprintf("key%d", i), fmt.Appendf(nil, "value%d", i)))
 		simulator.Done()
 		require.NoError(t, err)
 		simRes, err := simulator.GetTxSimulationResults()

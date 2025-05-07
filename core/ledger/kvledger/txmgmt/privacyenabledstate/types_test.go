@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
 	"github.com/hyperledger/fabric/core/ledger/internal/version"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/stretchr/testify/require"
@@ -33,7 +33,7 @@ func TestBatch(t *testing.T) {
 		for j := 0; j < 5; j++ {
 			for k := 0; k < 5; k++ {
 				batch.Put(fmt.Sprintf("ns-%d", i), fmt.Sprintf("collection-%d", j), fmt.Sprintf("key-%d", k),
-					[]byte(fmt.Sprintf("value-%d-%d-%d", i, j, k)), v)
+					fmt.Appendf(nil, "value-%d-%d-%d", i, j, k), v)
 			}
 		}
 	}
@@ -43,7 +43,7 @@ func TestBatch(t *testing.T) {
 				vv := batch.Get(fmt.Sprintf("ns-%d", i), fmt.Sprintf("collection-%d", j), fmt.Sprintf("key-%d", k))
 				require.NotNil(t, vv)
 				require.Equal(t,
-					&statedb.VersionedValue{Value: []byte(fmt.Sprintf("value-%d-%d-%d", i, j, k)), Version: v},
+					&statedb.VersionedValue{Value: fmt.Appendf(nil, "value-%d-%d-%d", i, j, k), Version: v},
 					vv)
 			}
 		}

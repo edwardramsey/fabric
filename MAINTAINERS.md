@@ -5,30 +5,27 @@ See [the documentation on Maintainers](https://hyperledger-fabric.readthedocs.io
 
 **Active Maintainers**
 
-| Name                    | GitHub | Chat | email
-|-------------------------|--------|------|----------------------
-| Alessandro Sorniotti    | [ale-linux][ale-linux] | aso | <ale.linux@sopit.net>
-| Andrew Coleman          | [andrew-coleman][andrew-coleman] | andrew-coleman | <andrew_coleman@uk.ibm.com>
-| Artem Barger            | [c0rwin][c0rwin] | c0rwin | <artem@bargr.net>
-| Dave Enyeart            | [denyeart][denyeart] | dave.enyeart | <enyeart@us.ibm.com>
-| Manish Sethi            | [manish-sethi][manish-sethi] | manish-sethi | <manish.sethi@gmail.com>
-| Senthilnathan Natarajan | [cendhu][cendhu] | Senthil1 | <cendhu@gmail.com>
-| Yacov Manevich          | [yacovm][yacovm] | yacovm | <yacov.manevich@ibm.com>
-| Yoav Tock               | [tock-ibm][tock-ibm] | tock-ibm | <tock@il.ibm.com>
+| Name                  | GitHub                                  | Chat           | Email                              |
+|-----------------------|-----------------------------------------|----------------|------------------------------------|
+| Alessandro Sorniotti  | [ale-linux][ale-linux]                  | aso            | <ale.linux@sopit.net>              |
+| Andrew Coleman        | [andrew-coleman][andrew-coleman]        | andrew-coleman | <andrew_coleman@uk.ibm.com>        |
+| Artem Barger          | [c0rwin][c0rwin]                        | c0rwin         | <artem@bargr.net>                  |
+| Dave Enyeart          | [denyeart][denyeart]                    | dave.enyeart   | <enyeart@us.ibm.com>               |
+| Fedor Partanskiy      | [pfi79][pfi79]                          | pfi79          | <fedor.partanskiy@atme.com>        |
+| Manish Sethi          | [manish-sethi][manish-sethi]            | manish-sethi   | <manish.sethi@gmail.com>           |
+| Tatsuya Sato          | [satota2][satota2]                      | satota2        | <tatsuya.sato.so@hitachi.com>      |
+| Yacov Manevich        | [yacovm][yacovm]                        | yacovm         | <yacov.manevich@gmail.com>         |
+| Yoav Tock             | [tock-ibm][tock-ibm]                    | tock-ibm       | <tock@il.ibm.com>                  |
 
-
-**Documentation Maintainers**
-
-| Name | GitHub | Chat | email
-|------|--------|------|----------------------
-| Chris Gabriel  | [denali49][denali49] | cmgabriel | <alaskadd@gmail.com>
-| Nikhil Gupta | [nikhil550][nikhil550] | nikhilgupta | <nikhilg550@gmail.com>
 
 **Release Managers**
 
-| Name | GitHub | Chat | email
-|------|--------|------|----------------------
-| Dave Enyeart | [denyeart][denyeart] | dave.enyeart | <enyeart@us.ibm.com>
+| Name             | GitHub               | Chat          | Email                           |
+|------------------|----------------------|---------------|---------------------------------|
+| Artem Barger     | [c0rwin][c0rwin]     | c0rwin        | <artem@bargr.net>               |
+| Dave Enyeart     | [denyeart][denyeart] | dave.enyeart  | <enyeart@us.ibm.com>            |
+| Yacov Manevich   | [yacovm][yacovm]     | yacovm        | <yacov.manevich@gmail.com>      |
+
 
 **Retired Maintainers**
 
@@ -51,6 +48,7 @@ See [the documentation on Maintainers](https://hyperledger-fabric.readthedocs.io
 | Kostas Christidis | [kchristidis][kchristidis] | kostas | <kostas@gmail.com>
 | Matthew Sykes | [sykesm][sykesm] | sykesm | <matthew.sykes@gmail.com>
 | Pam Andrejko | [pamandrejko][pamandrejko] | pandrejko | <pama@ibm.com>
+| Senthilnathan Natarajan | [cendhu][cendhu] | Senthil1 | <cendhu@gmail.com>
 | Sheehan Anderson | [srderson][srderson] | sheehan | <sranderson@gmail.com>
 | Srinivasan Muralidharan | [muralisrini][muralisrini] | muralisr | <srinivasan.muralidharan99@gmail.com>
 | Tamas Blummer | [tamasblummer][tamasblummer] | tamas | <tamas@digitalasset.com>
@@ -82,6 +80,7 @@ See [the documentation on Maintainers](https://hyperledger-fabric.readthedocs.io
 [nikhil550]: https://github.com/nikhil550
 [odowdaibm]: https://github.com/odowdaibm
 [pamandrejko]: https://github.com/pamandrejko
+[satota2]: https://github.com/satota2
 [smithbk]: https://github.com/smithbk
 [srderson]: https://github.com/srderson
 [sykesm]: https://github.com/sykesm
@@ -89,3 +88,4 @@ See [the documentation on Maintainers](https://hyperledger-fabric.readthedocs.io
 [tock-ibm]: https://github.com/tock-ibm
 [wlahti]: https://github.com/wlahti
 [yacovm]: https://github.com/yacovm
+[pfi79]: https://github.com/pfi79

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	proto "github.com/hyperledger/fabric-protos-go/gossip"
+	proto "github.com/hyperledger/fabric-protos-go-apiv2/gossip"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -235,7 +235,7 @@ func TestCertExpiration(t *testing.T) {
 		m := o.(protoext.ReceivedMessage).GetGossipMessage()
 		if protoext.IsPullMsg(m.GossipMessage) && protoext.IsDigestMsg(m.GossipMessage) {
 			for _, dig := range m.GetDataDig().Digests {
-				if bytes.Equal(dig, []byte(fmt.Sprintf("127.0.0.1:%d", port0))) {
+				if bytes.Equal(dig, fmt.Appendf(nil, "127.0.0.1:%d", port0)) {
 					identitiesGotViaPull <- struct{}{}
 				}
 			}

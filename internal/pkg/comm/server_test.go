@@ -406,6 +406,7 @@ func TestNewGRPCServerInvalidParameters(t *testing.T) {
 		"listen tcp: unknown port tcp/1BBB",
 		"listen tcp: address tcp/1BBB: unknown port",
 		"listen tcp: lookup tcp/1BBB: Servname not supported for ai_socktype",
+		"listen tcp: lookup tcp/1BBB: unknown port",
 	}
 	require.Error(t, err, fmt.Sprintf("[%s], [%s] [%s] or [%s] expected", msgs[0], msgs[1], msgs[2], msgs[3]))
 	require.Contains(t, msgs, err.Error())
@@ -723,7 +724,7 @@ func TestVerifyCertificateCallback(t *testing.T) {
 	})
 }
 
-// prior tests used self-signed certficates loaded by the GRPCServer and the test client
+// prior tests used self-signed certificates loaded by the GRPCServer and the test client
 // here we'll use certificates signed by certificate authorities
 func TestWithSignedRootCertificates(t *testing.T) {
 	t.Parallel()

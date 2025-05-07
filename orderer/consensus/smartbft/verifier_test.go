@@ -14,18 +14,18 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/SmartBFT-Go/consensus/pkg/types"
-	"github.com/SmartBFT-Go/consensus/smartbftprotos"
-	"github.com/golang/protobuf/proto"
-	cb "github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/msp"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger-labs/SmartBFT/pkg/types"
+	"github.com/hyperledger-labs/SmartBFT/smartbftprotos"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
 	"github.com/hyperledger/fabric/orderer/consensus/smartbft"
 	"github.com/hyperledger/fabric/orderer/consensus/smartbft/mocks"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"google.golang.org/protobuf/proto"
 )
 
 var hashOfZero = hex.EncodeToString(sha256.New().Sum(nil))
@@ -34,7 +34,7 @@ func TestNodeIdentitiesByID(t *testing.T) {
 	m := make(smartbft.NodeIdentitiesByID)
 	for id := uint64(0); id < 4; id++ {
 		m[id] = protoutil.MarshalOrPanic(&msp.SerializedIdentity{
-			IdBytes: []byte(fmt.Sprintf("%d", id)),
+			IdBytes: fmt.Appendf(nil, "%d", id),
 			Mspid:   "OrdererOrg",
 		})
 
@@ -48,7 +48,7 @@ func TestNodeIdentitiesByID(t *testing.T) {
 	}
 
 	_, ok := m.IdentityToID(protoutil.MarshalOrPanic(&msp.SerializedIdentity{
-		IdBytes: []byte(fmt.Sprintf("%d", 4)),
+		IdBytes: fmt.Appendf(nil, "%d", 4),
 		Mspid:   "OrdererOrg",
 	}))
 
@@ -111,6 +111,7 @@ func TestVerifyConsenterSig(t *testing.T) {
 		ValidateIdentityStructure: func(_ *msp.SerializedIdentity) error {
 			return nil
 		},
+		Logger: logger,
 	}
 
 	cv := &mocks.ConsenterVerifier{}
@@ -415,6 +416,7 @@ func TestVerifyProposal(t *testing.T) {
 		ValidateIdentityStructure: func(_ *msp.SerializedIdentity) error {
 			return nil
 		},
+		Logger: logger,
 	}
 
 	lastHash := hex.EncodeToString(protoutil.BlockHeaderHash(lastBlock.Header))

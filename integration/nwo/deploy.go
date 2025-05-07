@@ -14,9 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/peer/lifecycle"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/peer/lifecycle"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/integration/nwo/commands"
 	"github.com/hyperledger/fabric/protoutil"
@@ -25,6 +24,7 @@ import (
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
 	"github.com/onsi/gomega/gstruct"
+	"google.golang.org/protobuf/proto"
 )
 
 type Chaincode struct {
@@ -182,6 +182,7 @@ func ApproveChaincodeForMyOrg(n *Network, channel string, orderer *Orderer, chai
 				InitRequired:        chaincode.InitRequired,
 				CollectionsConfig:   chaincode.CollectionsConfig,
 				ClientAuth:          n.ClientAuthRequired,
+				WaitForEventTimeout: n.EventuallyTimeout,
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
@@ -238,6 +239,7 @@ func CommitChaincode(n *Network, channel string, orderer *Orderer, chaincode Cha
 		CollectionsConfig:   chaincode.CollectionsConfig,
 		PeerAddresses:       peerAddresses,
 		ClientAuth:          n.ClientAuthRequired,
+		WaitForEventTimeout: n.EventuallyTimeout,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
@@ -497,7 +499,29 @@ func EnableCapabilities(network *Network, channel, capabilitiesGroup, capabiliti
 		),
 	}
 
-	UpdateConfig(network, orderer, channel, config, updatedConfig, false, peers[0], peers...)
+	UpdateConfig(network, orderer, channel, config, updatedConfig, false, peers[0], nil, peers...)
+}
+
+func EnableChannelCapabilities(network *Network, channel, capabilitiesVersion string, getConfigBlockFromOrderer bool, orderer *Orderer, ordererSigners []*Orderer, peerSigners ...*Peer) {
+	if len(peerSigners) == 0 {
+		return
+	}
+
+	config := GetConfig(network, peerSigners[0], orderer, channel)
+	updatedConfig := proto.Clone(config).(*common.Config)
+
+	updatedConfig.ChannelGroup.Values["Capabilities"] = &common.ConfigValue{
+		ModPolicy: "Admins",
+		Value: protoutil.MarshalOrPanic(
+			&common.Capabilities{
+				Capabilities: map[string]*common.Capability{
+					capabilitiesVersion: {},
+				},
+			},
+		),
+	}
+
+	UpdateConfig(network, orderer, channel, config, updatedConfig, getConfigBlockFromOrderer, peerSigners[0], ordererSigners, peerSigners...)
 }
 
 // WaitUntilEqualLedgerHeight waits until all specified peers have the

@@ -11,7 +11,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
@@ -21,9 +21,8 @@ import (
 	"testing"
 	"time"
 
-	protoG "github.com/golang/protobuf/proto"
-	proto "github.com/hyperledger/fabric-protos-go/gossip"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	proto "github.com/hyperledger/fabric-protos-go-apiv2/gossip"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip/msgstore"
 	"github.com/hyperledger/fabric/gossip/protoext"
@@ -36,6 +35,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	protoG "google.golang.org/protobuf/proto"
 )
 
 var timeout = time.Second * time.Duration(15)
@@ -576,7 +576,7 @@ func TestConnect(t *testing.T) {
 	}
 	waitUntilOrFail(t, fullMembership)
 
-	discInst := instances[rand.Intn(len(instances))].Discovery.(*gossipDiscoveryImpl)
+	discInst := instances[rand.IntN(len(instances))].Discovery.(*gossipDiscoveryImpl)
 	mr, _ := discInst.createMembershipRequest(true)
 	am, _ := protoext.EnvelopeToGossipMessage(mr.GetMemReq().SelfInformation)
 	require.NotNil(t, am.SecretEnvelope)
@@ -1426,7 +1426,7 @@ func TestMsgStoreExpirationWithMembershipMessages(t *testing.T) {
 	for i := 0; i < peersNum; i++ {
 		peerToResponse := &NetworkMember{
 			Metadata:         []byte{},
-			PKIid:            []byte(fmt.Sprintf("localhost:%d", 22610+i)),
+			PKIid:            fmt.Appendf(nil, "localhost:%d", 22610+i),
 			Endpoint:         fmt.Sprintf("localhost:%d", 22610+i),
 			InternalEndpoint: fmt.Sprintf("localhost:%d", 22610+i),
 		}
@@ -1462,7 +1462,7 @@ func TestMsgStoreExpirationWithMembershipMessages(t *testing.T) {
 
 	// Checking is new Alive was processed
 	for i := 0; i < peersNum; i++ {
-		checkAliveMsgExist(instances, newAliveMsgs, i, "[Step 2 - proccesing aliveMsg]")
+		checkAliveMsgExist(instances, newAliveMsgs, i, "[Step 2 - processing aliveMsg]")
 	}
 
 	checkAliveMsgNotExist := func(instances []*gossipInstance, msgs []*protoext.SignedGossipMessage, index int, step string) {
@@ -1762,7 +1762,7 @@ func TestMembershipAfterExpiration(t *testing.T) {
 		}
 
 		return flogging.NewFabricLogger(l, zap.Hooks(func(entry zapcore.Entry) error {
-			// do nothing if we already found all the expectedMsgs
+			// do nothing if we have already found all the expectedMsgs
 			lock.RLock()
 			expectedMsgSize := len(expectedMsgs)
 			lock.RUnlock()

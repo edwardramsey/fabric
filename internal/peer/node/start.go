@@ -20,24 +20,23 @@ import (
 	"time"
 
 	docker "github.com/fsouza/go-dockerclient"
-	"github.com/golang/protobuf/proto"
-	cb "github.com/hyperledger/fabric-protos-go/common"
-	discprotos "github.com/hyperledger/fabric-protos-go/discovery"
-	gatewayprotos "github.com/hyperledger/fabric-protos-go/gateway"
-	pb "github.com/hyperledger/fabric-protos-go/peer"
-	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric-lib-go/bccsp/factory"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	floggingmetrics "github.com/hyperledger/fabric-lib-go/common/flogging/metrics"
+	"github.com/hyperledger/fabric-lib-go/common/metrics"
+	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
+	discprotos "github.com/hyperledger/fabric-protos-go-apiv2/discovery"
+	gatewayprotos "github.com/hyperledger/fabric-protos-go-apiv2/gateway"
+	pb "github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	ccdef "github.com/hyperledger/fabric/common/chaincode"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/deliver"
 	"github.com/hyperledger/fabric/common/fabhttp"
-	"github.com/hyperledger/fabric/common/flogging"
-	floggingmetrics "github.com/hyperledger/fabric/common/flogging/metrics"
 	"github.com/hyperledger/fabric/common/grpclogging"
 	"github.com/hyperledger/fabric/common/grpcmetrics"
 	"github.com/hyperledger/fabric/common/metadata"
-	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/policydsl"
 	"github.com/hyperledger/fabric/core/aclmgmt"
@@ -100,7 +99,8 @@ import (
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"gopkg.in/yaml.v2"
+	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -693,6 +693,10 @@ func serve(args []string) error {
 		BuiltinSCCs:            builtinSCCs,
 		TotalQueryLimit:        chaincodeConfig.TotalQueryLimit,
 		UserRunsCC:             userRunsCC,
+		UseWriteBatch:          chaincodeConfig.UseWriteBatch,
+		MaxSizeWriteBatch:      chaincodeConfig.MaxSizeWriteBatch,
+		UseGetMultipleKeys:     chaincodeConfig.UseGetMultipleKeys,
+		MaxSizeGetMultipleKeys: chaincodeConfig.MaxSizeGetMultipleKeys,
 	}
 
 	custodianLauncher := custodianLauncherAdapter{
@@ -762,7 +766,7 @@ func serve(args []string) error {
 	}
 
 	// deploy system chaincodes
-	for _, cc := range []scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst, lifecycleSCC} {
+	for _, cc := range []scc.SelfDescribingSysCC{csccInst, qsccInst, lifecycleSCC} {
 		if enabled, ok := chaincodeConfig.SCCAllowlist[cc.Name()]; !ok || !enabled {
 			logger.Infof("not deploying chaincode %s as it is not enabled", cc.Name())
 			continue
@@ -834,26 +838,6 @@ func serve(args []string) error {
 		discprotos.RegisterDiscoveryServer(peerServer.Server(), discoveryService)
 	}
 
-	if coreConfig.GatewayOptions.Enabled {
-		if coreConfig.DiscoveryEnabled {
-			logger.Info("Starting peer with Gateway enabled")
-
-			gatewayServer := gateway.CreateServer(
-				serverEndorser,
-				discoveryService,
-				peerInstance,
-				&serverConfig.SecOpts,
-				aclProvider,
-				coreConfig.LocalMSPID,
-				coreConfig.GatewayOptions,
-				builtinSCCs,
-			)
-			gatewayprotos.RegisterGatewayServer(peerServer.Server(), gatewayServer)
-		} else {
-			logger.Warning("Discovery service must be enabled for embedded gateway")
-		}
-	}
-
 	logger.Infof("Starting peer with ID=[%s], network ID=[%s], address=[%s]", coreConfig.PeerID, coreConfig.NetworkID, coreConfig.PeerAddress)
 
 	// Get configuration before starting go routines to avoid
@@ -912,6 +896,26 @@ func serve(args []string) error {
 	auth := authHandler.ChainFilters(serverEndorser, authFilters...)
 	// Register the Endorser server
 	pb.RegisterEndorserServer(peerServer.Server(), auth)
+
+	if coreConfig.GatewayOptions.Enabled {
+		if coreConfig.DiscoveryEnabled {
+			logger.Info("Starting peer with Gateway enabled")
+
+			gatewayServer := gateway.CreateServer(
+				auth,
+				discoveryService,
+				peerInstance,
+				&serverConfig.SecOpts,
+				aclProvider,
+				coreConfig.LocalMSPID,
+				coreConfig.GatewayOptions,
+				builtinSCCs,
+			)
+			gatewayprotos.RegisterGatewayServer(peerServer.Server(), gatewayServer)
+		} else {
+			logger.Warning("Discovery service must be enabled for embedded gateway")
+		}
+	}
 
 	// register the snapshot server
 	snapshotSvc := &snapshotgrpc.SnapshotService{LedgerGetter: peerInstance, ACLProvider: aclProvider}

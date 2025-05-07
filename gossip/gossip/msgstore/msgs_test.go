@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package msgstore
 
 import (
-	"math/rand"
+	crand "crypto/rand"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,9 @@ var r *rand.Rand
 
 func init() {
 	util.SetupTestLogging()
-	r = rand.New(rand.NewSource(time.Now().UnixNano()))
+	var seed [32]byte
+	_, _ = crand.Read(seed[:])
+	r = rand.New(rand.NewChaCha8(seed))
 }
 
 func alwaysNoAction(_ interface{}, _ interface{}) common.InvalidationResult {
@@ -61,7 +64,7 @@ func TestSize(t *testing.T) {
 }
 
 func TestNewMessagesInvalidates(t *testing.T) {
-	invalidated := make([]int, 9)
+	invalidated := make([]int, 0, 9)
 	msgStore := NewMessageStore(compareInts, func(m interface{}) {
 		invalidated = append(invalidated, m.(int))
 	})
@@ -190,7 +193,7 @@ func TestExpiration(t *testing.T) {
 		require.False(t, msgStore.CheckValid(i))
 	}
 
-	require.Equal(t, 10, msgStore.Size(), "Wrong number of items in store - after second batch expiration and first banch re-added")
+	require.Equal(t, 10, msgStore.Size(), "Wrong number of items in store - after second batch expiration and first batch re-added")
 }
 
 func TestExpirationConcurrency(t *testing.T) {

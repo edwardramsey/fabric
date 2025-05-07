@@ -11,17 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hyperledger/fabric/common/deliverclient"
-
-	"github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/deliverclient"
+	"github.com/hyperledger/fabric/common/deliverclient/blocksprovider"
+	"github.com/hyperledger/fabric/common/deliverclient/orderers"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/internal/pkg/identity"
-	"github.com/hyperledger/fabric/internal/pkg/peer/blocksprovider"
-	"github.com/hyperledger/fabric/internal/pkg/peer/orderers"
 	"github.com/pkg/errors"
 )
 
@@ -72,8 +71,9 @@ type Config struct {
 	// Gossip enables to enumerate peers in the channel, send a message to peers,
 	// and add a block to the gossip state transfer layer.
 	Gossip blocksprovider.GossipServiceAdapter
-	// OrdererSource provides orderer endpoints, complete with TLS cert pools.
-	OrdererSource *orderers.ConnectionSource
+	// OrdererEndpointOverrides provides peer-specific orderer endpoints overrides.
+	// These are loaded once when the peer starts.
+	OrdererEndpointOverrides map[string]*orderers.Endpoint
 	// Signer is the identity used to sign requests.
 	Signer identity.SignerSerializer
 	// DeliverServiceConfig is the configuration object.
@@ -131,7 +131,14 @@ func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo b
 	case "etcdraft":
 		d.blockDeliverer, err = d.createBlockDelivererCFT(chainID, ledgerInfo)
 	case "BFT":
-		d.blockDeliverer, err = d.createBlockDelivererBFT(chainID, ledgerInfo)
+		switch d.conf.DeliverServiceConfig.Policy {
+		case "cluster":
+			d.blockDeliverer, err = d.createBlockDelivererBFT(chainID, ledgerInfo)
+		case "simple":
+			d.blockDeliverer, err = d.createBlockDelivererCFT(chainID, ledgerInfo)
+		default:
+			err = errors.Errorf("unexpected delivey service policy: `%s`", d.conf.DeliverServiceConfig.Policy)
+		}
 	default:
 		err = errors.Errorf("unexpected consensus type: `%s`", ct)
 	}
@@ -191,14 +198,15 @@ func (d *deliverServiceImpl) createBlockDelivererCFT(chainID string, ledgerInfo 
 				SecOpts:     d.conf.DeliverServiceConfig.SecOpts,
 			},
 		},
-		Orderers:             d.conf.OrdererSource,
-		DoneC:                make(chan struct{}),
-		Signer:               d.conf.Signer,
-		DeliverStreamer:      blocksprovider.DeliverAdapter{},
-		Logger:               flogging.MustGetLogger("peer.blocksprovider").With("channel", chainID),
-		MaxRetryInterval:     d.conf.DeliverServiceConfig.ReConnectBackoffThreshold,
-		MaxRetryDuration:     d.conf.DeliverServiceConfig.ReconnectTotalTimeThreshold,
-		InitialRetryInterval: 100 * time.Millisecond,
+		OrderersSourceFactory: &orderers.ConnectionSourceFactory{Overrides: d.conf.OrdererEndpointOverrides},
+		CryptoProvider:        d.conf.CryptoProvider,
+		DoneC:                 make(chan struct{}),
+		Signer:                d.conf.Signer,
+		DeliverStreamer:       blocksprovider.DeliverAdapter{},
+		Logger:                flogging.MustGetLogger("peer.blocksprovider").With("channel", chainID),
+		MaxRetryInterval:      d.conf.DeliverServiceConfig.ReConnectBackoffThreshold,
+		MaxRetryDuration:      d.conf.DeliverServiceConfig.ReconnectTotalTimeThreshold,
+		InitialRetryInterval:  100 * time.Millisecond,
 		MaxRetryDurationExceededHandler: func() (stopRetries bool) {
 			return !d.conf.IsStaticLeader
 		},
@@ -212,7 +220,7 @@ func (d *deliverServiceImpl) createBlockDelivererCFT(chainID string, ledgerInfo 
 		dc.TLSCertHash = util.ComputeSHA256(cert.Certificate[0])
 	}
 
-	dc.Initialize()
+	dc.Initialize(d.conf.ChannelConfig)
 
 	return dc, nil
 }
@@ -254,7 +262,8 @@ func (d *deliverServiceImpl) createBlockDelivererBFT(chainID string, ledgerInfo 
 				SecOpts:     d.conf.DeliverServiceConfig.SecOpts,
 			},
 		},
-		Orderers:                  d.conf.OrdererSource,
+		OrderersSourceFactory:     &orderers.ConnectionSourceFactory{Overrides: d.conf.OrdererEndpointOverrides},
+		CryptoProvider:            d.conf.CryptoProvider,
 		DoneC:                     make(chan struct{}),
 		Signer:                    d.conf.Signer,
 		DeliverStreamer:           blocksprovider.DeliverAdapter{},
@@ -277,7 +286,7 @@ func (d *deliverServiceImpl) createBlockDelivererBFT(chainID string, ledgerInfo 
 		dcBFT.TLSCertHash = util.ComputeSHA256(cert.Certificate[0])
 	}
 
-	dcBFT.Initialize()
+	dcBFT.Initialize(d.conf.ChannelConfig, "")
 
 	return dcBFT, nil
 }

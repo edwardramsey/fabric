@@ -14,27 +14,31 @@ import (
 	"encoding/pem"
 	"path"
 	"reflect"
+	"sync/atomic"
+	"time"
 
-	"github.com/SmartBFT-Go/consensus/pkg/api"
-	"github.com/SmartBFT-Go/consensus/pkg/wal"
-	"github.com/golang/protobuf/proto"
-	cb "github.com/hyperledger/fabric-protos-go/common"
-	"github.com/hyperledger/fabric-protos-go/msp"
-	ab "github.com/hyperledger/fabric-protos-go/orderer"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/hyperledger-labs/SmartBFT/pkg/api"
+	"github.com/hyperledger-labs/SmartBFT/pkg/wal"
+	"github.com/hyperledger/fabric-lib-go/bccsp"
+	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-lib-go/common/metrics"
+	cb "github.com/hyperledger/fabric-protos-go-apiv2/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
+	ab "github.com/hyperledger/fabric-protos-go-apiv2/orderer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto"
-	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
 	"github.com/hyperledger/fabric/orderer/consensus"
+	"github.com/hyperledger/fabric/orderer/consensus/smartbft/util"
 	"github.com/hyperledger/fabric/protoutil"
-	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // CreateChainCallback creates a new chain
@@ -95,7 +99,7 @@ func New(
 	logger.Infof("WAL Directory is %s", walConfig.WALDir)
 
 	mpc := &MetricProviderConverter{
-		metricsProvider: metricsProvider,
+		MetricsProvider: metricsProvider,
 	}
 
 	consenter := &Consenter{
@@ -183,12 +187,7 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *cb
 	}
 	c.Logger.Infof("Local consenter id is %d", selfID)
 
-	puller, err := newBlockPuller(support, c.ClusterDialer, c.Conf.General.Cluster, c.BCCSP)
-	if err != nil {
-		c.Logger.Panicf("Failed initializing block puller")
-	}
-
-	config, err := configFromMetadataOptions((uint64)(selfID), configOptions)
+	config, err := util.ConfigFromMetadataOptions((uint64)(selfID), configOptions)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed parsing smartbft configuration")
 	}
@@ -201,14 +200,46 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *cb
 		Logger:               c.Logger,
 	}
 
-	chain, err := NewChain(configValidator, (uint64)(selfID), config, path.Join(c.WALBaseDir, support.ChannelID()), puller, c.Comm, c.SignerSerializer, c.GetPolicyManager(support.ChannelID()), support, c.Metrics, c.MetricsBFT, c.MetricsWalBFT, c.BCCSP)
+	egressCommFactory := func(runtimeConfig *atomic.Value, channelId string, comm cluster.Communicator) EgressComm {
+		channelDecorator := zap.String("channel", channelId)
+		return &Egress{
+			RuntimeConfig: runtimeConfig,
+			Channel:       channelId,
+			Logger:        flogging.MustGetLogger("orderer.consensus.smartbft.egress").With(channelDecorator),
+			RPC: &cluster.RPC{
+				Logger:        flogging.MustGetLogger("orderer.consensus.smartbft.rpc").With(channelDecorator),
+				Channel:       channelId,
+				StreamsByType: cluster.NewStreamsByType(),
+				Comm:          comm,
+				Timeout:       5 * time.Minute, // TODO: Externalize configuration
+			},
+		}
+	}
+
+	chain, err := NewChain(
+		configValidator,
+		(uint64)(selfID),
+		config,
+		path.Join(c.WALBaseDir, support.ChannelID()),
+		c.ClusterDialer,
+		c.Conf.General.Cluster,
+		c.Comm,
+		c.SignerSerializer,
+		c.GetPolicyManager(support.ChannelID()),
+		support,
+		c.Metrics,
+		c.MetricsBFT,
+		c.MetricsWalBFT,
+		c.BCCSP,
+		egressCommFactory,
+		&synchronizerCreator{})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed creating a new BFTChain")
 	}
 
 	// refresh cluster service with updated consenters
 	c.ClusterService.ConfigureNodeCerts(chain.Channel, consenters)
-	chain.clusterService = c.ClusterService
+	chain.ClusterService = c.ClusterService
 
 	return chain, nil
 }

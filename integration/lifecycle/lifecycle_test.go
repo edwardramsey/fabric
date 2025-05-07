@@ -13,10 +13,9 @@ import (
 	"syscall"
 
 	docker "github.com/fsouza/go-dockerclient"
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-config/protolator"
-	"github.com/hyperledger/fabric-config/protolator/protoext/ordererext"
-	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-config/protolator/protoext/peerext"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric/integration/channelparticipation"
 	"github.com/hyperledger/fabric/integration/nwo"
 	"github.com/hyperledger/fabric/integration/nwo/commands"
@@ -29,6 +28,7 @@ import (
 	. "github.com/onsi/gomega/gstruct"
 	"github.com/tedsuo/ifrit"
 	ginkgomon "github.com/tedsuo/ifrit/ginkgomon_v2"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("Lifecycle", func() {
@@ -191,8 +191,8 @@ var _ = Describe("Lifecycle", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit(1))
-		Expect(sess.Err).To(gbytes.Say("Error: endorsement failure during query. response: status:500 " +
-			"message:\"make sure the chaincode My_1st-Chaincode has been successfully defined on channel testchannel and try " +
+		Expect(sess.Err).To(gbytes.Say("Error: endorsement failure during query. response: status:500 "))
+		Expect(sess.Err).To(gbytes.Say("message:\"make sure the chaincode My_1st-Chaincode has been successfully defined on channel testchannel and try " +
 			"again: chaincode definition for 'My_1st-Chaincode' exists, but chaincode is not installed\""))
 
 		By("setting the correct package ID to restore the chaincode")
@@ -304,13 +304,13 @@ var _ = Describe("Lifecycle", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, network.EventuallyTimeout).Should(gexec.Exit(0))
-		org3Group := &ordererext.DynamicOrdererOrgGroup{ConfigGroup: &common.ConfigGroup{}}
+		org3Group := &peerext.DynamicApplicationOrgGroup{ConfigGroup: &common.ConfigGroup{}}
 		err = protolator.DeepUnmarshalJSON(bytes.NewBuffer(sess.Out.Contents()), org3Group)
 		Expect(err).NotTo(HaveOccurred())
 
 		// update the channel config to include org3
 		updatedConfig.ChannelGroup.Groups["Application"].Groups["Org3"] = org3Group.ConfigGroup
-		nwo.UpdateConfig(network, orderer, "testchannel", currentConfig, updatedConfig, true, testPeers[0], testPeers...)
+		nwo.UpdateConfig(network, orderer, "testchannel", currentConfig, updatedConfig, true, testPeers[0], nil, testPeers...)
 
 		By("joining the org3 peers to the channel")
 		network.JoinChannel("testchannel", orderer, org3peer0)
